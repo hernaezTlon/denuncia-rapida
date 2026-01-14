@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;">
+  <title>Denuncia Rápida</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <span class="logo-icon">🚗</span>
+        <h1>Denuncia Rápida</h1>
+      </div>
+      <div class="whatsapp-status" id="whatsappStatus">
+        <span class="status-dot disconnected"></span>
+        <span class="status-text">WhatsApp desconectado</span>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main">
+      <!-- Step 1: Photo Upload -->
+      <section class="card" id="photoSection">
+        <h2>📸 Subí la foto</h2>
+        <p class="subtitle">Arrastrá una foto o hacé click para seleccionar</p>
+        
+        <div class="dropzone" id="dropzone">
+          <div class="dropzone-content">
+            <span class="dropzone-icon">📁</span>
+            <p>Soltar foto aquí</p>
+            <button class="btn btn-secondary" id="selectFileBtn">Seleccionar archivo</button>
+          </div>
+        </div>
+        
+        <!-- Photo Preview -->
+        <div class="photo-preview hidden" id="photoPreview">
+          <img id="previewImage" alt="Preview">
+          <button class="btn-remove" id="removePhotoBtn">✕</button>
+        </div>
+      </section>
+
+      <!-- Step 2: Extracted Data -->
+      <section class="card hidden" id="dataSection">
+        <h2>📍 Datos extraídos</h2>
+        
+        <div class="data-grid">
+          <div class="data-item">
+            <label>Dirección</label>
+            <input type="text" id="addressInput" placeholder="Cargando...">
+            <span class="data-source" id="addressSource"></span>
+          </div>
+          
+          <div class="data-item">
+            <label>Fecha</label>
+            <input type="text" id="dateInput" placeholder="Cargando...">
+            <span class="data-source" id="dateSource"></span>
+          </div>
+          
+          <div class="data-item">
+            <label>Descripción</label>
+            <select id="descriptionSelect">
+              <option value="Estacionado en entrada de garage">Entrada de garage</option>
+              <option value="Estacionado en doble fila">Doble fila</option>
+              <option value="Estacionado sobre la vereda">Sobre la vereda</option>
+              <option value="Estacionado en rampa de discapacitados">Rampa de discapacitados</option>
+              <option value="Estacionado en parada de colectivo">Parada de colectivo</option>
+              <option value="Estacionado en paso peatonal">Paso peatonal</option>
+              <option value="custom">Personalizado...</option>
+            </select>
+            <input type="text" id="customDescription" class="hidden" placeholder="Escribí la descripción...">
+          </div>
+        </div>
+        
+        <div class="map-container" id="mapContainer">
+          <div class="map-placeholder">
+            <span>🗺️</span>
+            <p>Mapa no disponible</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 3: WhatsApp Connection -->
+      <section class="card hidden" id="whatsappSection">
+        <h2>💬 Conexión WhatsApp</h2>
+        
+        <div class="qr-container hidden" id="qrContainer">
+          <p>Escaneá el código QR con WhatsApp:</p>
+          <div class="qr-code" id="qrCode"></div>
+        </div>
+        
+        <div class="connected-message hidden" id="connectedMessage">
+          <span class="check-icon">✅</span>
+          <p>WhatsApp conectado</p>
+        </div>
+        
+        <button class="btn btn-primary" id="connectWhatsAppBtn">Conectar WhatsApp</button>
+      </section>
+
+      <!-- Step 4: Submit -->
+      <section class="card hidden" id="submitSection">
+        <h2>🚀 Enviar denuncia</h2>
+        
+        <div class="summary">
+          <div class="summary-item">
+            <span class="summary-label">Dirección:</span>
+            <span class="summary-value" id="summaryAddress">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Fecha:</span>
+            <span class="summary-value" id="summaryDate">-</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-label">Descripción:</span>
+            <span class="summary-value" id="summaryDescription">-</span>
+          </div>
+        </div>
+        
+        <button class="btn btn-large btn-success" id="submitBtn">
+          Enviar denuncia automáticamente
+        </button>
+        
+        <div class="progress-container hidden" id="progressContainer">
+          <div class="progress-bar">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+          <p class="progress-text" id="progressText">Iniciando...</p>
+        </div>
+      </section>
+
+      <!-- Result -->
+      <section class="card hidden" id="resultSection">
+        <div class="result-success hidden" id="resultSuccess">
+          <span class="result-icon">🎉</span>
+          <h2>¡Denuncia enviada!</h2>
+          <p>Número de trámite:</p>
+          <div class="ticket-number" id="ticketNumber">-</div>
+          <button class="btn btn-primary" id="newReportBtn">Nueva denuncia</button>
+        </div>
+        
+        <div class="result-error hidden" id="resultError">
+          <span class="result-icon">❌</span>
+          <h2>Error</h2>
+          <p id="errorMessage">-</p>
+          <button class="btn btn-secondary" id="retryBtn">Reintentar</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- Log Panel (collapsible) -->
+    <aside class="log-panel" id="logPanel">
+      <button class="log-toggle" id="logToggle">
+        <span>📋 Registro</span>
+        <span class="toggle-icon">▼</span>
+      </button>
+      <div class="log-content hidden" id="logContent">
+        <div class="log-entries" id="logEntries"></div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
