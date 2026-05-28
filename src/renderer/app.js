@@ -76,6 +76,16 @@ const el = {
   historyClose: $('historyClose'),
   historyList: $('historyList'),
 
+  // Settings (miBA credentials)
+  settingsToggle: $('settingsToggle'),
+  settingsModal: $('settingsModal'),
+  settingsClose: $('settingsClose'),
+  mibaUser: $('mibaUser'),
+  mibaPass: $('mibaPass'),
+  mibaSaveBtn: $('mibaSaveBtn'),
+  mibaClearBtn: $('mibaClearBtn'),
+  settingsStatus: $('settingsStatus'),
+
   // Log
   logToggle: $('logToggle'),
   logContent: $('logContent'),
@@ -696,6 +706,79 @@ function setupHistory() {
   el.historyClose.addEventListener('click', () => el.historyPanel.classList.add('hidden'));
 }
 
+// ============ Settings (miBA credentials) ============
+function setSettingsStatus(text, kind = 'info') {
+  el.settingsStatus.textContent = text;
+  el.settingsStatus.className = `settings-status ${kind}`;
+}
+
+async function refreshMibaStatus() {
+  try {
+    const { has, available } = await window.api.mibaHasCredentials();
+    if (!available) {
+      setStatus(el.statusMiba, el.statusMibaValue, 'off', 'sin llavero');
+      return;
+    }
+    if (has) {
+      setStatus(el.statusMiba, el.statusMibaValue, 'on', 'credenciales ok');
+    } else {
+      setStatus(el.statusMiba, el.statusMibaValue, 'off', 'sin guardar');
+    }
+  } catch {
+    /* leave as-is */
+  }
+}
+
+function setupSettings() {
+  el.settingsToggle.addEventListener('click', async () => {
+    el.settingsModal.classList.remove('hidden');
+    const { has, available } = await window.api.mibaHasCredentials();
+    if (!available) {
+      setSettingsStatus('⚠ El llavero del sistema no está disponible.', 'err');
+    } else if (has) {
+      setSettingsStatus('✓ Hay credenciales guardadas (entra solo cuando expira la sesión).', 'ok');
+      el.mibaUser.placeholder = '•••••••• (guardado)';
+      el.mibaPass.placeholder = '•••••••• (guardado)';
+    } else {
+      setSettingsStatus('Sin credenciales guardadas todavía.', 'info');
+    }
+  });
+
+  el.settingsClose.addEventListener('click', () => {
+    el.settingsModal.classList.add('hidden');
+    el.mibaUser.value = '';
+    el.mibaPass.value = '';
+  });
+
+  el.mibaSaveBtn.addEventListener('click', async () => {
+    const username = el.mibaUser.value.trim();
+    const password = el.mibaPass.value;
+    if (!username || !password) {
+      setSettingsStatus('✗ Completá usuario y contraseña.', 'err');
+      return;
+    }
+    const result = await window.api.mibaSaveCredentials({ username, password });
+    if (result.success) {
+      setSettingsStatus('✓ Guardado y encriptado. La próxima vez entra solo.', 'ok');
+      el.mibaUser.value = '';
+      el.mibaPass.value = '';
+      await refreshMibaStatus();
+    } else {
+      setSettingsStatus(`✗ ${result.error}`, 'err');
+    }
+  });
+
+  el.mibaClearBtn.addEventListener('click', async () => {
+    const result = await window.api.mibaClearCredentials();
+    if (result.success) {
+      setSettingsStatus(result.cleared ? '✓ Credenciales borradas.' : 'No había nada guardado.', 'info');
+      await refreshMibaStatus();
+    } else {
+      setSettingsStatus(`✗ ${result.error}`, 'err');
+    }
+  });
+}
+
 // ============ Log panel ============
 function setupLogPanel() {
   el.logToggle.addEventListener('click', () => {
@@ -743,6 +826,13 @@ function setupSubmit() {
   el.submitBtn.addEventListener('click', submitReport);
 }
 
+function setupSponsor() {
+  const btn = $('sponsorBtn');
+  if (btn) btn.addEventListener('click', () => {
+    window.api.openExternal('https://github.com/sponsors/hernaezTlon');
+  });
+}
+
 // ============ Init ============
 async function init() {
   setupPhotoUpload();
@@ -750,8 +840,10 @@ async function init() {
   setupDescriptionSelect();
   setupWhatsApp();
   setupSubmit();
+  setupSponsor();
   setupResultActions();
   setupHistory();
+  setupSettings();
   setupLogPanel();
   setStep(1);
 
@@ -776,7 +868,7 @@ async function init() {
     }
   });
 
-  setStatus(el.statusMiba, el.statusMibaValue, 'off', 'sin sesión');
+  refreshMibaStatus();
 }
 
 if (document.readyState === 'loading') {

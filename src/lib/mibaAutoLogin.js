@@ -1,16 +1,56 @@
 const { BrowserWindow } = require('electron');
 
+// Builds the in-page auto-fill script. Runs in the miBA login page context.
+// Conservative: bails unless it finds a password field; fills with native setters
+// so React/Angular forms register the change; submits exactly once.
+function buildFillScript(username, password) {
+  return `(function() {
+    try {
+      var pass = document.querySelector('input[type="password"]');
+      if (!pass) return 'no-password-field';
+      var user = document.querySelector(
+        'input[type="email"], input[name="username"], input[name="usuario"], ' +
+        'input[name="cuil"], input[name="user"], input[name="documento"], ' +
+        'input[id*="user" i], input[id*="cuil" i], input[id*="usuario" i], ' +
+        'input[type="text"]:not([readonly]):not([type="hidden"])'
+      );
+      if (!user) return 'no-user-field';
+      function setVal(elm, val) {
+        var proto = Object.getPrototypeOf(elm);
+        var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (desc && desc.set) { desc.set.call(elm, val); } else { elm.value = val; }
+        elm.dispatchEvent(new Event('input', { bubbles: true }));
+        elm.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      setVal(user, ${JSON.stringify(username)});
+      setVal(pass, ${JSON.stringify(password)});
+      var btn = document.querySelector('button[type="submit"], input[type="submit"]')
+              || (pass.form && pass.form.querySelector('button'))
+              || document.querySelector('button');
+      if (btn) { btn.click(); return 'submitted'; }
+      if (pass.form && pass.form.requestSubmit) { pass.form.requestSubmit(); return 'submitted-form'; }
+      if (pass.form) { pass.form.submit(); return 'submitted-form-legacy'; }
+      return 'filled-no-submit';
+    } catch (e) { return 'error: ' + e.message; }
+  })();`;
+}
+
 // In-app browser window that opens the miBA OAuth URL and uses a persistent
 // session (cookies survive between launches) so the user only logs in once.
 class MiBAAutoLogin {
   constructor() {
     this.window = null;
-    this.successCallbacks = [];
+    this.credentials = null;
+    this.attempted = false;
   }
 
-  open(loginUrl, parentWindow) {
+  open(loginUrl, parentWindow, credentials = null) {
+    this.credentials = credentials;
+    this.attempted = false;
+
     if (this.window) {
       this.window.focus();
+      this.window.loadURL(loginUrl);
       return;
     }
 
@@ -29,14 +69,14 @@ class MiBAAutoLogin {
       }
     });
 
-    // Log redirects so we can tell if the botm.cc splash is hanging or actually navigating
-    this.window.webContents.on('did-navigate', (_event, url) => {
-      console.log('[miBA window] navigated to:', url);
-    });
-    this.window.webContents.on('did-navigate-in-page', (_event, url) => {
-      console.log('[miBA window] in-page nav to:', url);
-    });
-    this.window.webContents.on('did-fail-load', (_event, code, desc, url) => {
+    const onPageSettled = (url) => {
+      console.log('[miBA window] at:', url);
+      this._maybeAutofill();
+    };
+    this.window.webContents.on('did-navigate', (_e, url) => onPageSettled(url));
+    this.window.webContents.on('did-navigate-in-page', (_e, url) => onPageSettled(url));
+    this.window.webContents.on('did-finish-load', () => this._maybeAutofill());
+    this.window.webContents.on('did-fail-load', (_e, code, desc, url) => {
       console.log('[miBA window] failed to load:', url, code, desc);
     });
 
@@ -44,7 +84,29 @@ class MiBAAutoLogin {
 
     this.window.on('closed', () => {
       this.window = null;
+      this.credentials = null;
+      this.attempted = false;
     });
+  }
+
+  async _maybeAutofill() {
+    if (!this.credentials || this.attempted || !this.window) return;
+    const wc = this.window.webContents;
+    let hasPassword = false;
+    try {
+      hasPassword = await wc.executeJavaScript(`!!document.querySelector('input[type="password"]')`);
+    } catch { return; }
+    if (!hasPassword) return; // not on the login form yet — wait for next navigation
+
+    this.attempted = true; // one shot — never loop (avoids account lockout)
+    try {
+      const result = await wc.executeJavaScript(
+        buildFillScript(this.credentials.username, this.credentials.password)
+      );
+      console.log('[miBA autofill]', result);
+    } catch (e) {
+      console.log('[miBA autofill] error:', e.message);
+    }
   }
 
   close() {

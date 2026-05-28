@@ -17,3 +17,6 @@ IMG_*.jpg
 # OCR model files (downloaded at runtime, not source)
 *.traineddata
 eng.traineddata
+
+# Icon build intermediates (keep assets/ + build/icon.icns, drop the working iconset)
+build/icon.iconset/

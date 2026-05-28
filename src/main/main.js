@@ -9,36 +9,46 @@ const { validateReportData } = require('../lib/reportValidation');
 const aiAssistant = require('../lib/aiAssistant');
 const reportHistory = require('../lib/reportHistory');
 const { MiBAAutoLogin, isLoginSuccessMessage } = require('../lib/mibaAutoLogin');
+const mibaCredentials = require('../lib/mibaCredentials');
 
 const mibaLogin = new MiBAAutoLogin();
 
 let mainWindow;
 let whatsappBot = null;
 
+const APP_ICON = path.join(__dirname, '../../assets/icon.png');
+
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 900,
-    height: 700,
-    minWidth: 600,
-    minHeight: 500,
+    width: 1040,
+    height: 760,
+    minWidth: 720,
+    minHeight: 560,
+    icon: APP_ICON,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js')
     },
     titleBarStyle: 'hiddenInset',
-    backgroundColor: '#1a1a2e'
+    backgroundColor: '#050918'
   });
 
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
-  
-  // Open DevTools in development
-  if (process.env.NODE_ENV === 'development') {
-    mainWindow.webContents.openDevTools();
+
+  // DevTools only when explicitly requested (OPEN_DEVTOOLS=1), not on every dev launch.
+  // Toggle anytime with Cmd+Opt+I / Ctrl+Shift+I.
+  if (process.env.OPEN_DEVTOOLS === '1') {
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
 }
 
 app.whenReady().then(() => {
+  // Dock icon in dev (packaged builds get it from the .icns via electron-builder)
+  if (process.platform === 'darwin' && app.dock) {
+    try { app.dock.setIcon(APP_ICON); } catch (_) { /* ignore */ }
+  }
+
   createWindow();
 
   app.on('activate', () => {
@@ -118,9 +128,17 @@ ipcMain.handle('whatsapp-init', async () => {
       whatsappBot.on('login-required', (url) => {
         mainWindow.webContents.send('whatsapp-login-required', url);
         // Open in an in-app BrowserWindow with persistent cookies (partition: 'persist:miba').
-        // First login: user types creds once. Future runs: cookies survive → silent auto-login.
+        // If the user saved miBA credentials, auto-fill + submit the login form. Otherwise
+        // the window just opens for manual login (and cookies persist for next time).
         // The timeout is paused while the user is in WAITING_LOGIN — take as long as you need.
-        mibaLogin.open(url, mainWindow);
+        const creds = mibaCredentials.getMibaCredentials();
+        mibaLogin.open(url, mainWindow, creds);
+        if (creds) {
+          mainWindow.webContents.send('whatsapp-message', {
+            from: 'system',
+            text: 'Intentando login automático en miBA con tus credenciales guardadas…'
+          });
+        }
       });
 
       whatsappBot.on('disconnected', (reason) => {
@@ -266,6 +284,32 @@ ipcMain.handle('get-report', async (event, file) => {
   } catch (error) {
     console.error('getReport error:', error);
     return null;
+  }
+});
+
+// miBA credentials (stored encrypted via safeStorage — never returned to the renderer)
+ipcMain.handle('miba-save-credentials', async (event, { username, password }) => {
+  try {
+    mibaCredentials.saveMibaCredentials(username, password);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('miba-has-credentials', async () => {
+  return {
+    has: mibaCredentials.hasMibaCredentials(),
+    available: mibaCredentials.isAvailable()
+  };
+});
+
+ipcMain.handle('miba-clear-credentials', async () => {
+  try {
+    const cleared = mibaCredentials.clearMibaCredentials();
+    return { success: true, cleared };
+  } catch (error) {
+    return { success: false, error: error.message };
   }
 });
 

@@ -30,10 +30,20 @@
         <li class="step" data-step="5"><span class="step-num">05</span><span class="step-label">Listo</span></li>
       </ol>
 
-      <button class="rail-btn" id="historyToggle" title="Mis denuncias">
-        <span class="rail-btn-icon">▤</span>
-        <span class="rail-btn-label">Historial</span>
-      </button>
+      <div class="rail-actions">
+        <button class="rail-btn rail-btn-sponsor" id="sponsorBtn" title="Apoyar el proyecto en GitHub Sponsors">
+          <span class="rail-btn-icon">♥</span>
+          <span class="rail-btn-label">Apoyar</span>
+        </button>
+        <button class="rail-btn" id="settingsToggle" title="Credenciales miBA">
+          <span class="rail-btn-icon">⚙</span>
+          <span class="rail-btn-label">miBA</span>
+        </button>
+        <button class="rail-btn" id="historyToggle" title="Mis denuncias">
+          <span class="rail-btn-icon">▤</span>
+          <span class="rail-btn-label">Historial</span>
+        </button>
+      </div>
     </header>
 
     <!-- STATUS BAR: at-a-glance system health -->
@@ -289,6 +299,42 @@
         <div class="history-empty">Sin denuncias guardadas todavía.</div>
       </div>
     </aside>
+
+    <!-- SETTINGS MODAL: miBA credentials -->
+    <div class="overlay overlay-settings hidden" id="settingsModal">
+      <div class="settings-card">
+        <div class="settings-head">
+          <div>
+            <div class="card-eyebrow">credenciales miBA</div>
+            <h2 class="card-title">Login automático</h2>
+          </div>
+          <button class="ghost-btn ghost-btn-small" id="settingsClose">cerrar</button>
+        </div>
+        <p class="settings-intro">
+          Guardá tu usuario y contraseña de miBA <strong>encriptados en el llavero del sistema</strong>.
+          Cuando la sesión expire, la app entra sola — sin que tengas que escribir nada.
+        </p>
+
+        <div class="settings-field">
+          <label for="mibaUser">Usuario miBA (CUIL, email o DNI)</label>
+          <input type="text" id="mibaUser" autocomplete="off" spellcheck="false" placeholder="20-12345678-3">
+        </div>
+        <div class="settings-field">
+          <label for="mibaPass">Contraseña</label>
+          <input type="password" id="mibaPass" autocomplete="off" placeholder="••••••••">
+        </div>
+
+        <div class="settings-status" id="settingsStatus"></div>
+
+        <div class="settings-actions">
+          <button class="ghost-btn" id="mibaClearBtn">Borrar guardadas</button>
+          <button class="primary-action primary-action-compact" id="mibaSaveBtn">
+            <span class="primary-action-label">Guardar</span>
+          </button>
+        </div>
+        <p class="settings-foot">🔒 Encriptado con la clave del sistema operativo. Nunca se guarda en texto plano ni se sube a ningún lado.</p>
+      </div>
+    </div>
 
     <!-- DEV LOG (collapsible, bottom) -->
     <aside class="log-panel" id="logPanel">

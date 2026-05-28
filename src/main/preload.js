@@ -48,6 +48,11 @@ contextBridge.exposeInMainWorld('api', {
   listReports: () => ipcRenderer.invoke('list-reports'),
   getReport: (file) => ipcRenderer.invoke('get-report', file),
 
+  // miBA credentials (password never crosses back to renderer)
+  mibaSaveCredentials: (creds) => ipcRenderer.invoke('miba-save-credentials', creds),
+  mibaHasCredentials: () => ipcRenderer.invoke('miba-has-credentials'),
+  mibaClearCredentials: () => ipcRenderer.invoke('miba-clear-credentials'),
+
   // Utilities
   openExternal: (url) => ipcRenderer.invoke('open-external', url)
 });
