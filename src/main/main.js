@@ -77,6 +77,23 @@ ipcMain.handle('process-photo', async (event, filePath) => {
   }
 });
 
+// Make a browser-renderable preview (sharp decodes DNG/HEIC/etc; <img> can't).
+// Returns a small JPEG data URL.
+ipcMain.handle('make-preview', async (event, filePath) => {
+  try {
+    const sharp = require('sharp');
+    const buf = await sharp(filePath)
+      .rotate()
+      .resize({ width: 800, height: 800, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 78 })
+      .toBuffer();
+    return { success: true, dataUrl: `data:image/jpeg;base64,${buf.toString('base64')}` };
+  } catch (error) {
+    console.error('make-preview error:', error.message);
+    return { success: false, error: error.message };
+  }
+});
+
 // Handle file dialog
 ipcMain.handle('open-file-dialog', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {

@@ -5,6 +5,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   // Photo processing
   processPhoto: (filePath) => ipcRenderer.invoke('process-photo', filePath),
+  makePreview: (filePath) => ipcRenderer.invoke('make-preview', filePath),
   openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
   // Get native file path from a dropped File object (Electron 33+)
   getFilePath: (file) => webUtils.getPathForFile(file),

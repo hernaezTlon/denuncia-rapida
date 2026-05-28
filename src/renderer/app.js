@@ -211,10 +211,16 @@ async function processPhoto(filePath, photoType) {
   const dropzoneEl = photoType === 'context' ? el.contextDropzone : el.plateDropzone;
   const spinnerEl = photoType === 'context' ? el.contextSpinner : el.plateSpinner;
 
-  imageEl.src = `file://${filePath}`;
-  previewEl.hidden = false;
-  dropzoneEl.hidden = true;
-  spinnerEl.hidden = false;
+  // Use the .hidden CLASS (display:none !important) — the `hidden` attribute is
+  // overridden by .dropzone{display:grid} / .photo-spinner{display:flex}.
+  previewEl.classList.remove('hidden');
+  dropzoneEl.classList.add('hidden');
+  spinnerEl.classList.remove('hidden');
+
+  // Generate a browser-renderable preview via sharp (handles DNG/HEIC, which <img> can't).
+  window.api.makePreview(filePath)
+    .then((p) => { imageEl.src = p && p.success ? p.dataUrl : `file://${filePath}`; })
+    .catch(() => { imageEl.src = `file://${filePath}`; });
 
   if (photoType === 'context' && el.contextMeta) {
     el.contextMeta.textContent = name;
@@ -239,7 +245,7 @@ async function processPhoto(filePath, photoType) {
   try {
     [result, aiResult] = await Promise.all([photoResultPromise, aiClassifyPromise]);
   } finally {
-    spinnerEl.hidden = true;
+    spinnerEl.classList.add('hidden');
   }
 
   if (!result?.success) {
@@ -264,9 +270,9 @@ async function processPhoto(filePath, photoType) {
   const addressNeedsNumber = result.data?.address?.needsNumber;
   if ((addressMissing || addressNeedsNumber) && state.gps) {
     const partial = result.data?.address?.formatted || '';
-    spinnerEl.hidden = false;
+    spinnerEl.classList.remove('hidden');
     try { await tryAiRepairAddress(filePath, state.gps, partial); }
-    finally { spinnerEl.hidden = true; }
+    finally { spinnerEl.classList.add('hidden'); }
   }
 
   checkPhotosReady();
@@ -275,14 +281,14 @@ async function processPhoto(filePath, photoType) {
 function removePhoto(photoType) {
   if (photoType === 'context') {
     state.contextPhoto = null;
-    el.contextPreview.hidden = true;
-    el.contextDropzone.hidden = false;
+    el.contextPreview.classList.add('hidden');
+    el.contextDropzone.classList.remove('hidden');
     el.contextImage.src = '';
     if (el.contextMeta) el.contextMeta.textContent = '';
   } else {
     state.platePhoto = null;
-    el.platePreview.hidden = true;
-    el.plateDropzone.hidden = false;
+    el.platePreview.classList.add('hidden');
+    el.plateDropzone.classList.remove('hidden');
     el.plateImage.src = '';
   }
   checkPhotosReady();
@@ -401,8 +407,8 @@ function populateDataFields(data) {
       updateMap(data.gps.latitude, data.gps.longitude);
     } else {
       el.addressSource.textContent = 'sin GPS en la foto · escribí la dirección a mano';
-      el.mapEmpty.hidden = false;
-      el.mapFrame.hidden = true;
+      el.mapEmpty.classList.remove('hidden');
+      el.mapFrame.classList.add('hidden');
     }
   }
 
@@ -429,8 +435,8 @@ function populateDataFields(data) {
 function updateMap(lat, lng) {
   const url = `https://www.openstreetmap.org/export/embed.html?bbox=${lng-0.002},${lat-0.001},${lng+0.002},${lat+0.001}&layer=mapnik&marker=${lat},${lng}`;
   el.mapFrame.src = url;
-  el.mapFrame.hidden = false;
-  el.mapEmpty.hidden = true;
+  el.mapFrame.classList.remove('hidden');
+  el.mapEmpty.classList.add('hidden');
 }
 
 // ============ Validation ============
