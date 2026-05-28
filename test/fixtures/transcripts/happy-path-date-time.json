@@ -1,0 +1,74 @@
+{
+  "name": "happy-path-date-time",
+  "report": {
+    "address": "AV RIVADAVIA [AGREGAR NÚMERO]",
+    "date": "31/01/2026",
+    "time": "10:09",
+    "description": "Auto estacionado sobre la vereda.",
+    "contextPhotoPath": "/tmp/context.jpg",
+    "platePhotoPath": "/tmp/plate.jpg",
+    "isRecent": false
+  },
+  "steps": [
+    {
+      "bot": "Vehículos. A. Autos mal estacionados.",
+      "expect": { "sendText": "A", "state": "waiting_category" }
+    },
+    {
+      "bot": "Auto mal estacionado.",
+      "expect": { "sendText": "A", "state": "waiting_subcategory" }
+    },
+    {
+      "bot": "Si tenés todo listo, comencemos.",
+      "expect": { "sendText": "A", "state": "waiting_confirm_start" }
+    },
+    {
+      "bot": "Antes de seguir iniciá sesión en miBA: botm.cc/abc123",
+      "expect": { "state": "waiting_login", "loginUrl": "https://botm.cc/abc123" }
+    },
+    {
+      "bot": "Listo, ya estás en miBA.",
+      "expect": { "state": "waiting_email_confirm" }
+    },
+    {
+      "bot": "Confirmá tu mail. A. Está bien.",
+      "expect": { "sendText": "A", "state": "waiting_address_input" }
+    },
+    {
+      "bot": "Decime la dirección exacta o esquina.",
+      "expect": { "sendText": "AV RIVADAVIA", "state": "waiting_address_confirm" }
+    },
+    {
+      "bot": "Anoté esta dirección. A. Está bien.",
+      "expect": { "sendText": "A", "state": "waiting_context_photo" }
+    },
+    {
+      "bot": "Mandame una foto de dónde está estacionado.",
+      "expect": { "sendPhoto": "/tmp/context.jpg", "state": "waiting_plate_photo" }
+    },
+    {
+      "bot": "Ahora mandame la foto de la patente.",
+      "expect": { "sendPhoto": "/tmp/plate.jpg", "state": "waiting_plate_confirm" }
+    },
+    {
+      "bot": "Anoté esta patente. A. Sí.",
+      "expect": { "sendText": "A", "state": "waiting_date" }
+    },
+    {
+      "bot": "¿Qué día y a qué hora lo viste?",
+      "expect": { "sendText": "31/01/2026 10:09", "state": "waiting_description" }
+    },
+    {
+      "bot": "Contanos qué está pasando en un solo mensaje.",
+      "expect": { "sendText": "Auto estacionado sobre la vereda.", "state": "waiting_final_confirm" }
+    },
+    {
+      "bot": "A. Seguir",
+      "expect": { "sendText": "A", "state": "waiting_final_confirm" }
+    },
+    {
+      "bot": "Tu número de trámite es 12345678/2026",
+      "expect": { "state": "idle", "ticket": "12345678/2026" }
+    }
+  ]
+}

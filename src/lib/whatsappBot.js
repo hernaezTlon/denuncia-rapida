@@ -1,11 +1,37 @@
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const EventEmitter = require('events');
-const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
 
-// Buenos Aires Ciudad WhatsApp number
-const BA_BOT_NUMBER = '5491150500147@c.us';
+// Buenos Aires Ciudad WhatsApp number (Baileys format)
+const BA_BOT_NUMBER = '5491150500147@s.whatsapp.net';
+// WhatsApp now uses LID (LinkedDevice ID) for some accounts — Boti's replies come from this.
+// LID is account-global, not user-specific, so it's stable to hardcode.
+const BA_BOT_LID = '229686311424240@lid';
+
+// Strict allowlist — only Boti's verified JIDs are accepted. The other "@lid" senders
+// we saw in older logs turned out to be the user's personal contacts whose LIDs got
+// captured by the previous over-permissive filter. Never again.
+const KNOWN_BOTI_JIDS = new Set([
+  '5491150500147@s.whatsapp.net', // legacy phone JID, still the address we send TO
+  '229686311424240@lid'           // verified Boti LID (matches "Anoté esta patente" pattern from real runs)
+]);
+
+function isBaBotSender(jid) {
+  if (!jid) return false;
+  return KNOWN_BOTI_JIDS.has(jid);
+}
+
+// Lazy-load aiAssistant so tests that mock the bot don't trigger Ollama
+function getAiAssistant() {
+  try { return require('./aiAssistant'); } catch { return null; }
+}
+
+const AI_MAX_CALLS_PER_REPORT = 5;
+const STATE_STUCK_TIMEOUT_MS = 12_000;
+
+// States where we wait silently for a user action (miBA login). AI must NOT
+// intervene here — it just sends "A" to whatever and derails Boti into wrong flows.
+const PASSIVE_WAIT_STATES = new Set(['waiting_login']);
 
 // Conversation state machine
 const STATES = {
@@ -22,65 +48,348 @@ const STATES = {
   WAITING_PLATE_PHOTO: 'waiting_plate_photo',
   WAITING_PLATE_CONFIRM: 'waiting_plate_confirm',
   WAITING_DATE: 'waiting_date',
+  WAITING_TIME: 'waiting_time',
   WAITING_DESCRIPTION: 'waiting_description',
   WAITING_FINAL_CONFIRM: 'waiting_final_confirm',
   COMPLETED: 'completed',
   ERROR: 'error'
 };
 
+function normalizeBotText(text) {
+  if (!text) return '';
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    // Boti uses Markdown bold/italic (*word*, _word_); strip those so pattern matching works
+    .replace(/[*_]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function matchesAny(text, patterns) {
+  return patterns.some((pattern) => text.includes(pattern));
+}
+
+function matchesAll(text, patterns) {
+  return patterns.every((pattern) => text.includes(pattern));
+}
+
+function extractLoginUrl(text) {
+  if (!text) return null;
+  // Match the FULL path including slashes (e.g. botm.cc/l/3brzWR5)
+  const urlMatch = text.match(/(?:https?:\/\/)?botm\.cc\/[A-Za-z0-9_/-]+/i);
+  if (!urlMatch) return null;
+
+  const rawUrl = urlMatch[0].replace(/[.,;!?)/]$/, '');
+  if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
+    return rawUrl;
+  }
+  return `https://${rawUrl}`;
+}
+
+function extractTicketNumber(text) {
+  if (!text) return null;
+  const ticketMatch = text.match(/\d{7,}\/\d+/);
+  return ticketMatch ? ticketMatch[0] : null;
+}
+
+/**
+ * Extract the plate Boti claims to have detected, e.g.
+ *   "Anoté esta patente: AE817CU"
+ *   "Anoté esta patente: A 259 VHF"
+ * Returns the plate string (uppercase, no spaces) or null.
+ */
+function extractBotiPlate(text) {
+  if (!text) return null;
+  // "anote esta patente:" or "patente detectada:" then the plate
+  const m = text.match(/(?:anot[eé]\s+esta\s+patente|patente\s+detectada)\s*:?\s*([A-Z0-9\s.]{5,15})/i);
+  if (!m) return null;
+  return m[1].toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
+
+function platesEqual(a, b) {
+  if (!a || !b) return false;
+  const norm = (s) => String(s).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return norm(a) === norm(b);
+}
+
+function isDatePrompt(normalizedText) {
+  return matchesAny(normalizedText, [
+    'que dia',
+    'fecha',
+    'cuando',
+    'a que hora',
+    'hora',
+    'momento'
+  ]);
+}
+
+function cleanAddress(address) {
+  return String(address || '')
+    .replace(/\[[^\]]*]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Parse a Boti menu like:
+ *   "Puedo ayudarte con:\nA. Habilitar remis\nB. ...\nH. Auto mal estacionado"
+ * Returns { A: 'Habilitar remis', ..., H: 'Auto mal estacionado' }
+ */
+function parseMenu(text) {
+  if (!text) return {};
+  const options = {};
+  // Match "A. text", "A) text", "A - text" at line start (with optional whitespace)
+  const regex = /^\s*([A-Z])\s*[.)\-:]\s*(.+?)\s*$/gm;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    options[match[1]] = match[2].trim();
+  }
+  return options;
+}
+
+/**
+ * Given a menu and an ordered list of keyword groups, find the best matching key.
+ * Each group is an array of keywords ALL of which must be present in the option text.
+ * Groups are tried in priority order.
+ * Example: findMenuOption({A: 'Habilitar remis', H: 'Auto mal estacionado'}, [['mal estacionado'], ['vehiculo']])
+ *   → 'H'
+ */
+function findMenuOption(menu, keywordGroups) {
+  if (!menu || Object.keys(menu).length === 0) return null;
+  const normalized = Object.fromEntries(
+    Object.entries(menu).map(([k, v]) => [k, normalizeBotText(v)])
+  );
+  for (const group of keywordGroups) {
+    const groupNormalized = group.map((k) => normalizeBotText(k));
+    for (const [letter, text] of Object.entries(normalized)) {
+      if (groupNormalized.every((k) => text.includes(k))) {
+        return letter;
+      }
+    }
+  }
+  return null;
+}
+
+function isKeywordSearchPrompt(normalizedText) {
+  return matchesAny(normalizedText, [
+    'palabras claves',
+    'no te entendi',
+    'que estas buscando',
+    'con menos palabras',
+    'intentemos de nuevo'
+  ]);
+}
+
+// Goal: what we're trying to reach in Boti's menus, in priority order
+// (try most specific first, then progressively broader)
+const VIOLATION_GOAL_KEYWORDS = [
+  ['auto mal estacionado'],
+  ['mal estacionado'],
+  ['estacionamiento']
+];
+const VEHICLE_REPORT_GOAL_KEYWORDS = [
+  ['reportar vehiculo'],
+  ['reportar auto'],
+  ['vehiculos mal'],
+  ['autos mal'],
+  ['vehiculos'],
+  ['autos']
+];
+const CONFIRM_START_KEYWORDS = [
+  ['si', 'tengo todo'],
+  ['si', 'tenes todo'],
+  ['comencemos'],
+  ['si', 'listo']
+];
+const CONFIRM_OK_KEYWORDS = [
+  ['si'],
+  ['esta bien'],
+  ['correcto'],
+  ['confirmar']
+];
+const CONFIRM_CONTINUE_KEYWORDS = [
+  ['seguir'],
+  ['confirmar'],
+  ['enviar']
+];
+
 class WhatsAppBot extends EventEmitter {
   constructor() {
     super();
-    
-    this.client = null;
+
+    this.sock = null;
     this.isReady = false;
     this.currentReport = null;
     this.state = STATES.IDLE;
     this.loginUrl = null;
+    this.stateTimer = null;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.lastBotMessage = null;
+    this.history = [];
+    this.aiCallsCount = 0;
+    this.stuckTimer = null;
+    this.aiDisambiguate = null; // injectable for tests
+    this.actualBotJid = null; // captured from first inbound reply
   }
-  
+
   async initialize() {
-    this.client = new Client({
-      authStrategy: new LocalAuth({
-        dataPath: path.join(process.env.HOME || process.env.USERPROFILE, '.denuncia-rapida-session')
-      }),
-      puppeteer: {
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    // Clean up previous socket if reconnecting
+    if (this.sock) {
+      try {
+        this.sock.ev.removeAllListeners();
+        this.sock.end();
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+      this.sock = null;
+    }
+
+    // Dynamic imports for ESM-only packages
+    const baileys = await import('baileys');
+    const { default: pino } = await import('pino');
+    const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = baileys;
+
+    this._DisconnectReason = DisconnectReason;
+
+    const authDir = path.join(process.env.HOME || process.env.USERPROFILE, '.denuncia-rapida-session');
+
+    // Ensure auth directory exists
+    if (!fs.existsSync(authDir)) {
+      fs.mkdirSync(authDir, { recursive: true });
+    }
+
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
+
+    // Fetch the WhatsApp Web version Baileys is compatible with right now.
+    // Without this, Baileys uses a hardcoded version that WA rejects when WA bumps the protocol.
+    let waVersion;
+    try {
+      const versionResult = await fetchLatestBaileysVersion();
+      waVersion = versionResult.version;
+      console.log('Using WhatsApp version:', waVersion.join('.'));
+    } catch (err) {
+      console.warn('Could not fetch latest WA version, using Baileys default:', err.message);
+    }
+
+    this.sock = makeWASocket({
+      version: waVersion,
+      browser: Browsers.macOS('Desktop'),
+      auth: state,
+      printQRInTerminal: false,
+      logger: pino({ level: 'silent' })
+    });
+
+    // Save credentials whenever they update
+    this.sock.ev.on('creds.update', saveCreds);
+
+    // Connection updates (QR, connected, disconnected)
+    this.sock.ev.on('connection.update', (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        console.log('QR Code received');
+        this.emit('qr', qr);
+      }
+
+      if (connection === 'open') {
+        console.log('WhatsApp client is ready!');
+        this.isReady = true;
+        this.reconnectAttempts = 0;
+        this.emit('ready');
+      }
+
+      if (connection === 'close') {
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        console.log('WhatsApp disconnected, status:', statusCode);
+        this.isReady = false;
+
+        // 405 = protocol error (stale session), 401 = unauthorized, loggedOut = user logged out
+        const isFatal = statusCode === this._DisconnectReason.loggedOut
+          || statusCode === 405
+          || statusCode === 401;
+
+        if (isFatal) {
+          this.reconnectAttempts++;
+          if (this.reconnectAttempts > 2) {
+            // Tried clearing session and reconnecting twice — give up
+            console.log('Fatal disconnect persists after session clear, giving up');
+            this.emit('auth-failure', `Error de conexión (código ${statusCode}). Puede que la versión de WhatsApp sea incompatible.`);
+            this.emit('disconnected', 'fatal_error');
+            return;
+          }
+          // Clear stale auth and ask for fresh QR scan
+          console.log('Fatal disconnect, clearing session...');
+          const authDir = path.join(process.env.HOME || process.env.USERPROFILE, '.denuncia-rapida-session');
+          try {
+            fs.rmSync(authDir, { recursive: true, force: true });
+          } catch (e) {
+            console.error('Failed to clear session:', e.message);
+          }
+          // Reinitialize to show new QR
+          console.log('Reinitializing for fresh QR...');
+          setTimeout(() => this.initialize(), 2000);
+        } else if (this.reconnectAttempts < this.maxReconnectAttempts) {
+          // Temporary disconnect — reconnect with backoff
+          this.reconnectAttempts++;
+          const delay = Math.min(1000 * this.reconnectAttempts, 5000);
+          console.log(`Reconnecting (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay}ms...`);
+          setTimeout(() => this.initialize(), delay);
+        } else {
+          console.log('Max reconnect attempts reached');
+          this.emit('auth-failure', 'No se pudo conectar después de varios intentos');
+          this.emit('disconnected', 'max_retries');
+        }
       }
     });
-    
-    // QR Code for first-time login
-    this.client.on('qr', (qr) => {
-      console.log('QR Code received, scan to login:');
-      qrcode.generate(qr, { small: true });
-      this.emit('qr', qr);
-    });
-    
-    // Ready
-    this.client.on('ready', () => {
-      console.log('WhatsApp client is ready!');
-      this.isReady = true;
-      this.emit('ready');
-    });
-    
-    // Authentication failure
-    this.client.on('auth_failure', (error) => {
-      console.error('WhatsApp auth failure:', error);
-      this.emit('auth-failure', error);
-    });
-    
+
     // Incoming messages
-    this.client.on('message', async (message) => {
-      // Only process messages from BA bot
-      if (message.from === BA_BOT_NUMBER) {
-        await this.handleBotResponse(message);
+    this.sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type !== 'notify') return;
+
+      for (const msg of messages) {
+        if (msg.key.fromMe || !msg.message) continue;
+
+        const sender = msg.key.remoteJid;
+        if (!isBaBotSender(sender)) {
+          console.log(`Ignoring message from non-bot sender: ${sender}`);
+          continue;
+        }
+
+        // Track which specific Boti JID is replying in this session
+        if (this.actualBotJid !== sender) {
+          this.actualBotJid = sender;
+          console.log(`Boti reply from: ${sender}`);
+        }
+
+        // Extract text from message
+        const text = msg.message.conversation
+          || msg.message.extendedTextMessage?.text
+          || msg.message.buttonsResponseMessage?.selectedDisplayText
+          || msg.message.listResponseMessage?.title
+          || '';
+
+        if (text) {
+          await this.handleBotResponse(text);
+        }
       }
     });
-    
-    await this.client.initialize();
+
+    // Track delivery acks so we know if Boti actually received our messages
+    this.sock.ev.on('messages.update', (updates) => {
+      for (const u of updates) {
+        if (!isBaBotSender(u.key?.remoteJid) && u.key?.remoteJid !== BA_BOT_NUMBER) continue;
+        const status = u.update?.status;
+        if (status !== undefined) {
+          const labels = { 0: 'ERROR', 1: 'sent-to-server', 2: 'delivered', 3: 'read', 4: 'played' };
+          console.log(`ACK: ${u.key.id} → ${labels[status] || status}`);
+        }
+      }
+    });
   }
-  
+
   /**
    * Start a new parking violation report
    */
@@ -88,226 +397,843 @@ class WhatsAppBot extends EventEmitter {
     if (!this.isReady) {
       throw new Error('WhatsApp not ready');
     }
-    
+
     this.currentReport = {
       ...reportData,
       ticketNumber: null,
       startedAt: new Date(),
       logs: []
     };
-    
+
+    // Reset per-report state
+    this.history = [];
+    this.aiCallsCount = 0;
+    this.lastBotMessage = null;
+    this._lastPlateTextSentAt = null;
+
     this.state = STATES.WAITING_MENU;
-    
-    // Start the conversation
-    await this.sendMessage('Denuncia vial');
-    
-    // Return a promise that resolves when the report is completed
+    this.emitProgress(10, 'Iniciando conversacion...');
+
+    await this.sendMessage('cancelar');
+    await this.delay(1500);
+    await this.sendMessage('auto mal estacionado');
+    this.resetStateTimer();
+
     return new Promise((resolve, reject) => {
       this.reportResolve = resolve;
       this.reportReject = reject;
-      
-      // Timeout after 5 minutes
-      this.reportTimeout = setTimeout(() => {
-        this.state = STATES.ERROR;
-        reject(new Error('Report timed out'));
-      }, 5 * 60 * 1000);
+      this._startReportTimeout(reject, 5 * 60 * 1000);
     });
   }
-  
+
+  _startReportTimeout(reject, ms) {
+    clearTimeout(this.reportTimeout);
+    this.reportTimeout = setTimeout(() => {
+      if (this.state === STATES.WAITING_LOGIN) {
+        // Don't fail the report just because the user is still logging in
+        return;
+      }
+      this.state = STATES.ERROR;
+      clearTimeout(this.stateTimer);
+      reject(new Error(`La denuncia expiro (${Math.round(ms / 60000)} minutos sin completar)`));
+    }, ms);
+  }
+
+  // Called from state machine: pause the global timeout while user logs into miBA
+  _pauseReportTimeout() {
+    clearTimeout(this.reportTimeout);
+    this.reportTimeout = null;
+  }
+
+  // Called when login completes: give a fresh 3 minutes for the rest of the conversation
+  _resumeReportTimeout() {
+    if (this.reportReject) {
+      this._startReportTimeout(this.reportReject, 3 * 60 * 1000);
+    }
+  }
+
   /**
    * Handle responses from the BA bot
    */
-  async handleBotResponse(message) {
-    const text = message.body;
+  async handleBotResponse(text) {
     this.log(`Bot: ${text.substring(0, 100)}...`);
     this.emit('message', { from: 'bot', text });
-    
+    this.lastBotMessage = text;
+    this.history.push({ from: 'bot', text });
+    // Cancel any pending stuck check since a new bot message arrived
+    clearTimeout(this.stuckTimer);
+
+    const prevState = this.state;
+    const normalizedText = normalizeBotText(text);
+
+    // Global handler: if Boti asks for the plate as text (Boti sends 2-3 messages in a row
+    // like "no veo bien la foto" + "Mandame la patente por escrito" — we only respond ONCE).
+    const plateStates = new Set([STATES.WAITING_PLATE_PHOTO, STATES.WAITING_PLATE_CONFIRM]);
+    if (plateStates.has(this.state) && matchesAny(normalizedText, [
+      'patente por escrito', 'escribi la patente', 'escribila',
+      'no veo bien', 'no puedo leer',
+      'escribi la patente en este formato', 'formato: ab123cd', 'formato: aaa123'
+    ])) {
+      // Suppress duplicate sends within 8 seconds — Boti sends multiple "please send by text"
+      // messages in a row and we don't want to spam it with the plate.
+      const now = Date.now();
+      if (this._lastPlateTextSentAt && (now - this._lastPlateTextSentAt) < 8000) {
+        this.log('Ya enviamos la patente por texto hace poco, ignorando mensaje duplicado de Boti');
+        return;
+      }
+      const ourPlate = this.currentReport?.detectedPlate;
+      if (ourPlate) {
+        await this.delay(500);
+        await this.sendMessage(ourPlate);
+        this._lastPlateTextSentAt = now;
+        this.log(`Boti pidió patente por texto → enviamos OCR: ${ourPlate}`);
+        this.state = STATES.WAITING_PLATE_CONFIRM;
+        this.emitProgress(78, 'Patente enviada por texto...');
+        return;
+      } else {
+        this.emit('message', {
+          from: 'system',
+          text: 'Boti pide la patente por texto pero no tenemos OCR confiable. Probá con un close-up.'
+        });
+        this.failReport(new Error('Boti pidió patente por texto y no tenemos OCR confiable'));
+        return;
+      }
+    }
+
+    // Boti's terminal failures: detected ONCE and we abort the loop so the AI doesn't
+    // burn its budget trying to navigate Boti's "do you want to try again" menus.
+    if (this.state !== STATES.IDLE && this.state !== STATES.ERROR) {
+      // Server-side: backend rejected the already-completed submission
+      if (matchesAny(normalizedText, ['no pude enviar', 'algo anduvo mal', 'sigue fallando el envio'])) {
+        this.log('Boti reportó fallo del servidor BA Ciudad. Abortando.');
+        this.emit('message', { from: 'system', text: 'BA Ciudad falló al guardar la denuncia (servidor de ellos). Probá más tarde.' });
+        this.failReport(new Error('BA Ciudad no pudo guardar la denuncia (error del servidor). Reintentá en unos minutos.'));
+        return;
+      }
+      // Photo rejected — Boti's vision pipeline couldn't read the image at all. After
+      // this Boti dumps the user into the top-level menu; navigating back is futile.
+      if (matchesAny(normalizedText, ['no entendi ese archivo', 'sigo sin entender', 'no pude reconocer'])) {
+        this.log('Boti no entendió la foto. Abortando.');
+        this.emit('message', {
+          from: 'system',
+          text: 'Boti rechazó la foto ("no entendí ese archivo"). Probá con una foto más clara o más cercana del vehículo.'
+        });
+        this.failReport(new Error('Boti no pudo procesar la foto. Probá con otra foto.'));
+        return;
+      }
+      // Boti gave up and wants to hand off to a human — irrecoverable
+      if (matchesAny(normalizedText, ['hables con una persona', 'hablar con una persona'])) {
+        this.log('Boti se rindió ("hablar con una persona"). Abortando.');
+        this.emit('message', {
+          from: 'system',
+          text: 'Boti se confundió con el flujo (suele pasar justo después de una denuncia exitosa). Esperá 5 minutos y reintentá.'
+        });
+        this.failReport(new Error('Boti perdió contexto. Esperá unos minutos antes de reintentar.'));
+        return;
+      }
+      // Wrong-flow detection: Boti routed us into "Revisar multas" / "Consultar mis puntos" /
+      // "Suscripciones BA" — these are for the user's OWN tickets, not for filing a denuncia.
+      // Pre-photo states only (no false-positive once we're past the address step).
+      const prePhotoStates = [
+        STATES.WAITING_MENU, STATES.WAITING_CATEGORY, STATES.WAITING_SUBCATEGORY,
+        STATES.WAITING_CONFIRM_START
+      ];
+      if (prePhotoStates.includes(this.state) &&
+          matchesAny(normalizedText, [
+            'revisar multas', 'consultar mis puntos', 'suscripciones ba',
+            'escribime tu patente', 'terminos y condiciones'
+          ])) {
+        this.log('Boti nos metió en el flujo de Revisar Multas. Abortando.');
+        this.emit('message', {
+          from: 'system',
+          text: 'Boti se metió en el flujo de "Revisar multas" (no es el de denuncia). Esperá un par de minutos antes de reintentar.'
+        });
+        this.failReport(new Error('Boti se confundió de flujo. Reintentá en unos minutos.'));
+        return;
+      }
+    }
+
+    // Parse menu options (if any) once — used by all menu-based states
+    const menu = parseMenu(text);
+    const hasMenu = Object.keys(menu).length > 0;
+
+    // If Boti is asking for keyword search, send our goal keyword
+    if (isKeywordSearchPrompt(normalizedText) && !hasMenu) {
+      await this.delay(500);
+      await this.sendMessage('auto mal estacionado');
+      this.history.push({ from: 'app', text: 'auto mal estacionado' });
+      this.resetStateTimer();
+      return;
+    }
+
     // Parse bot message and respond based on current state
     switch (this.state) {
-      case STATES.WAITING_MENU:
-        // Bot shows main menu, we look for "Vehículos" option
-        if (text.includes('Vehículos') || text.includes('Autos mal estacionados')) {
+      case STATES.WAITING_MENU: {
+        // Prefer menu parsing — Boti's real menus have "A. Reportar vehículo" format
+        if (hasMenu) {
+          let key = findMenuOption(menu, VIOLATION_GOAL_KEYWORDS);
+          if (key) {
+            await this.delay(500);
+            await this.sendMessage(key);
+            this.log(`Menu → ${key}: ${menu[key]} (violation direct)`);
+            this.state = STATES.WAITING_SUBCATEGORY;
+            this.emitProgress(20, `Seleccionando "${menu[key]}"...`);
+            break;
+          }
+          key = findMenuOption(menu, VEHICLE_REPORT_GOAL_KEYWORDS);
+          if (key) {
+            await this.delay(500);
+            await this.sendMessage(key);
+            this.log(`Menu → ${key}: ${menu[key]} (vehicle category)`);
+            this.state = STATES.WAITING_CATEGORY;
+            this.emitProgress(15, `Seleccionando "${menu[key]}"...`);
+            break;
+          }
+        }
+        // Prose fallback (legacy/fixture): match keywords in the bot's preamble
+        if (matchesAny(normalizedText, ['vehiculos', 'autos mal estacionados', 'autos', 'estacionamiento'])) {
           await this.delay(500);
           await this.sendMessage('A');
           this.state = STATES.WAITING_CATEGORY;
+          this.emitProgress(15, 'Menu principal...');
         }
         break;
-        
-      case STATES.WAITING_CATEGORY:
-        // Bot shows vehicle options
-        if (text.includes('Auto mal estacionado')) {
+      }
+
+      case STATES.WAITING_CATEGORY: {
+        // Prefer menu parsing — look for "auto mal estacionado" in option list
+        if (hasMenu) {
+          const key = findMenuOption(menu, VIOLATION_GOAL_KEYWORDS);
+          if (key) {
+            await this.delay(500);
+            await this.sendMessage(key);
+            this.log(`Menu → ${key}: ${menu[key]} (violation type)`);
+            this.state = STATES.WAITING_SUBCATEGORY;
+            this.emitProgress(20, `Seleccionando "${menu[key]}"...`);
+            break;
+          }
+        }
+        // Prose fallback
+        if (matchesAny(normalizedText, ['auto mal estacionado', 'mal estacionado'])) {
           await this.delay(500);
           await this.sendMessage('A');
           this.state = STATES.WAITING_SUBCATEGORY;
+          this.emitProgress(20, 'Seleccionando categoria...');
         }
         break;
-        
-      case STATES.WAITING_SUBCATEGORY:
-        // Bot asks if we have everything ready
-        if (text.includes('Si tenés todo')) {
+      }
+
+      case STATES.WAITING_SUBCATEGORY: {
+        // Real Boti, after "Auto mal estacionado", sends 4 messages: intro + 2 warnings + menu.
+        // The menu offers "A. Reportar vehículo" (the actual start button) or sometimes the
+        // login URL directly. Handle all three transitions.
+
+        // Login URL can arrive at this stage (skipping the confirm step) — capture it.
+        if (matchesAny(normalizedText, ['inicia sesion', 'iniciar sesion', 'botm.cc'])) {
+          const loginUrl = extractLoginUrl(text);
+          if (loginUrl) {
+            this.loginUrl = loginUrl;
+            this.emit('login-required', this.loginUrl);
+            this.log(`Login URL: ${loginUrl}`);
+          }
+          this.state = STATES.WAITING_LOGIN;
+          this.emitProgress(30, 'Esperando login miBA...');
+          break;
+        }
+
+        if (hasMenu) {
+          // Priority 1: "Reportar vehículo" / "comencemos" / "tengo todo" — these all mean "start"
+          let key = findMenuOption(menu, [
+            ['reportar vehiculo'],
+            ['reportar auto'],
+            ...CONFIRM_START_KEYWORDS
+          ]);
+          if (key) {
+            await this.delay(500);
+            await this.sendMessage(key);
+            this.log(`Menu → ${key}: ${menu[key]} (start report)`);
+            this.state = STATES.WAITING_CONFIRM_START;
+            this.emitProgress(25, `Seleccionando "${menu[key]}"...`);
+            break;
+          }
+          // Priority 2: Boti re-asks for "Auto mal estacionado" (maybe we got the wrong menu)
+          key = findMenuOption(menu, VIOLATION_GOAL_KEYWORDS);
+          if (key) {
+            await this.delay(500);
+            await this.sendMessage(key);
+            this.log(`Menu → ${key}: ${menu[key]} (re-selecting violation)`);
+            // Stay in same state — next menu will be the "Reportar vehículo" one
+            break;
+          }
+        }
+
+        // Prose fallback (legacy fixtures)
+        if (matchesAny(normalizedText, ['si tenes todo', 'tenes todo', 'comencemos', 'listo'])) {
           await this.delay(500);
           await this.sendMessage('A');
           this.state = STATES.WAITING_CONFIRM_START;
+          this.emitProgress(25, 'Confirmando inicio...');
         }
         break;
-        
-      case STATES.WAITING_CONFIRM_START:
-        // Bot asks for login
-        if (text.includes('iniciá sesión') || text.includes('botm.cc')) {
-          // Extract login URL
-          const urlMatch = text.match(/botm\.cc\/\w+/);
-          if (urlMatch) {
-            this.loginUrl = `https://${urlMatch[0]}`;
+      }
+
+      case STATES.WAITING_CONFIRM_START: {
+        // Path 1 — fresh login: Boti sends botm.cc URL
+        if (matchesAny(normalizedText, ['inicia sesion', 'iniciar sesion', 'botm.cc'])) {
+          const loginUrl = extractLoginUrl(text);
+          if (loginUrl) {
+            this.loginUrl = loginUrl;
             this.emit('login-required', this.loginUrl);
           }
           this.state = STATES.WAITING_LOGIN;
+          this._pauseReportTimeout(); // Don't penalize user for login delay
+          this.emitProgress(30, 'Esperando login miBA (timeout pausado)...');
+          break;
         }
-        break;
-        
-      case STATES.WAITING_LOGIN:
-        // Bot confirms login successful
-        if (text.includes('ya estás en miBA') || text.includes('Listo')) {
+        // Path 2 — already logged in (cookies persist): Boti skips login and confirms
+        if (matchesAny(normalizedText, ['ya estas en miba', 'sesion iniciada', 'iniciaste sesion'])) {
           this.state = STATES.WAITING_EMAIL_CONFIRM;
+          this.emitProgress(40, 'Sesión miBA válida...');
+          break;
+        }
+        // Path 3 — already logged in, Boti jumps directly to the email confirm menu
+        if (hasMenu && matchesAny(normalizedText, ['mail', 'correo', 'email', 'contactar'])) {
+          const key = findMenuOption(menu, [['esta bien'], ['si'], ['correcto']]);
+          if (key) {
+            await this.delay(500);
+            await this.sendMessage(key);
+            this.state = STATES.WAITING_ADDRESS_INPUT;
+            this.emitProgress(50, 'Email confirmado...');
+          }
+          break;
         }
         break;
-        
-      case STATES.WAITING_EMAIL_CONFIRM:
-        // Bot shows email and asks to confirm
-        if (text.includes('mail') && (text.includes('A. Está bien') || text.includes('Está bien'))) {
+      }
+
+      case STATES.WAITING_LOGIN: {
+        // Wait silently for user to complete miBA login. Match specific miBA confirmations.
+        if (matchesAny(normalizedText, ['ya estas en miba', 'sesion iniciada', 'iniciaste sesion'])
+            || (matchesAny(normalizedText, ['miba']) && matchesAny(normalizedText, ['listo', 'estas']))) {
+          this.state = STATES.WAITING_EMAIL_CONFIRM;
+          this._resumeReportTimeout(); // Fresh 3min for the rest of the conversation
+          this.emitProgress(40, 'Login exitoso...');
+          break;
+        }
+        // Sometimes Boti skips the "Listo, ya estás en miBA" line and goes straight
+        // to the email confirm menu. Treat that as success too.
+        if (hasMenu && matchesAny(normalizedText, ['mail', 'correo', 'email', 'contactar'])) {
+          const key = findMenuOption(menu, [['esta bien'], ['si'], ['correcto']]);
+          if (key) {
+            await this.delay(500);
+            await this.sendMessage(key);
+            this.state = STATES.WAITING_ADDRESS_INPUT;
+            this._resumeReportTimeout();
+            this.emitProgress(50, 'Email confirmado...');
+          }
+        }
+        break;
+      }
+
+      case STATES.WAITING_EMAIL_CONFIRM: {
+        // Bot shows email and asks to confirm. Menu has "Está bien" / "Es otro" etc.
+        if (hasMenu && matchesAny(normalizedText, ['mail', 'correo', 'email'])) {
+          const key = findMenuOption(menu, [['esta bien'], ['si'], ['correcto'], ['confirmar']]);
+          if (key) {
+            await this.delay(500);
+            await this.sendMessage(key);
+            this.state = STATES.WAITING_ADDRESS_INPUT;
+            this.emitProgress(50, 'Confirmando email...');
+            break;
+          }
+        }
+        // Fallback: prose match
+        if (matchesAny(normalizedText, ['mail', 'correo']) && matchesAny(normalizedText, ['a. esta bien', 'esta bien', 'correcto'])) {
           await this.delay(500);
           await this.sendMessage('A');
           this.state = STATES.WAITING_ADDRESS_INPUT;
+          this.emitProgress(50, 'Confirmando email...');
         }
         break;
-        
+      }
+
       case STATES.WAITING_ADDRESS_INPUT:
         // Bot asks for address
-        if (text.includes('dirección exacta') || text.includes('esquina')) {
+        if (matchesAny(normalizedText, ['direccion exacta', 'direccion', 'ubicacion', 'esquina'])) {
           await this.delay(500);
-          await this.sendMessage(this.currentReport.address);
+          await this.sendMessage(cleanAddress(this.currentReport.address));
           this.state = STATES.WAITING_ADDRESS_CONFIRM;
+          this.emitProgress(55, 'Enviando direccion...');
         }
         break;
-        
-      case STATES.WAITING_ADDRESS_CONFIRM:
-        // Bot shows address and asks to confirm
-        if (text.includes('Anoté esta dirección') && text.includes('A. Está bien')) {
+
+      case STATES.WAITING_ADDRESS_CONFIRM: {
+        // Boti sends 2-3 messages here: "Anoté esta dirección" → "¿Está bien? A. Está bien B. Es otra"
+        // → after confirm → "Mandame una foto..."
+
+        // Already at photo step? (sometimes Boti skips the explicit confirm)
+        if (matchesAny(normalizedText, ['mandame una foto', 'enviame una foto', 'mandame foto', 'sacale una foto'])) {
+          await this.delay(500);
+          await this.sendPhoto(this.currentReport.contextPhotoPath);
+          this.state = STATES.WAITING_PLATE_PHOTO;
+          this.emitProgress(65, 'Enviando foto contexto...');
+          break;
+        }
+
+        // Confirm menu — accept ANY menu where one option says "esta bien" or "si"
+        if (hasMenu) {
+          const key = findMenuOption(menu, [['esta bien'], ['si'], ['correcto']]);
+          if (key) {
+            await this.delay(500);
+            await this.sendMessage(key);
+            this.state = STATES.WAITING_CONTEXT_PHOTO;
+            this.emitProgress(60, 'Direccion confirmada...');
+            break;
+          }
+        }
+
+        // Single-line prose fallback: "Anoté esta dirección. A. Está bien." (legacy/fixtures)
+        if (matchesAll(normalizedText, ['anote', 'esta bien'])) {
           await this.delay(500);
           await this.sendMessage('A');
           this.state = STATES.WAITING_CONTEXT_PHOTO;
-        } else if (text.includes('Mandame una foto') && text.includes('dónde está estacionado')) {
-          // Already at photo step
-          await this.delay(500);
-          await this.sendPhoto(this.currentReport.contextPhotoPath);
-          this.state = STATES.WAITING_PLATE_PHOTO;
+          this.emitProgress(60, 'Direccion confirmada...');
         }
         break;
-        
+      }
+
       case STATES.WAITING_CONTEXT_PHOTO:
         // Bot asks for context photo
-        if (text.includes('foto') && text.includes('dónde está')) {
+        if (matchesAny(normalizedText, ['foto']) && matchesAny(normalizedText, ['donde esta', 'contexto', 'ubicacion'])) {
           await this.delay(500);
           await this.sendPhoto(this.currentReport.contextPhotoPath);
           this.state = STATES.WAITING_PLATE_PHOTO;
+          this.emitProgress(70, 'Enviando foto patente...');
         }
         break;
-        
-      case STATES.WAITING_PLATE_PHOTO:
-        // Bot asks for plate photo
-        if (text.includes('foto') && text.includes('patente')) {
+
+      case STATES.WAITING_PLATE_PHOTO: {
+        // Sub-path A: Boti asks "¿El vehículo tiene patente?" with A.Sí / B.No menu.
+        // Always answer "Sí" — we wouldn't be here otherwise.
+        if (hasMenu && matchesAny(normalizedText, ['tiene patente', 'tiene dominio'])) {
+          const yesKey = findMenuOption(menu, [['si']]);
+          if (yesKey) {
+            await this.delay(500);
+            await this.sendMessage(yesKey);
+            this.log(`Menu → ${yesKey}: ${menu[yesKey]} (¿tiene patente? → sí)`);
+            break;
+          }
+        }
+
+        // Sub-path B: Boti asks for plate as text (its OCR failed)
+        if (matchesAny(normalizedText, [
+          'patente por escrito', 'escribi la patente', 'escribila',
+          'no veo bien', 'no puedo leer'
+        ])) {
+          const ourPlate = this.currentReport?.detectedPlate;
+          if (ourPlate) {
+            await this.delay(500);
+            await this.sendMessage(ourPlate);
+            this.log(`Boti pidió la patente por texto → enviamos nuestra OCR: ${ourPlate}`);
+            this.state = STATES.WAITING_PLATE_CONFIRM;
+            this.emitProgress(78, 'Patente enviada por texto...');
+          } else {
+            this.emit('message', {
+              from: 'system',
+              text: 'Boti pidió la patente por texto pero no tenemos OCR confiable. Probá con un close-up de la patente.'
+            });
+            this.failReport(new Error('Boti pidió patente por texto y no tenemos OCR confiable'));
+          }
+          break;
+        }
+
+        // Sub-path C: Boti asks for the plate photo itself
+        if (matchesAny(normalizedText, ['foto']) && matchesAny(normalizedText, ['patente', 'dominio'])) {
           await this.delay(500);
           await this.sendPhoto(this.currentReport.platePhotoPath);
           this.state = STATES.WAITING_PLATE_CONFIRM;
+          this.emitProgress(75, 'Confirmando patente...');
         }
         break;
-        
-      case STATES.WAITING_PLATE_CONFIRM:
-        // Bot shows detected plate
-        if (text.includes('Anoté esta patente') && text.includes('A. Sí')) {
+      }
+
+      case STATES.WAITING_PLATE_CONFIRM: {
+        // Bot shows detected plate and asks to confirm. We must NOT blindly say yes —
+        // Boti sometimes reads the wrong vehicle's plate (e.g. a car in the background
+        // instead of the motorcycle in the foreground). Cross-check against our own OCR.
+        const botiPlate = extractBotiPlate(text);
+        const ourPlate = this.currentReport?.detectedPlate;
+
+        if (hasMenu && matchesAny(normalizedText, ['patente', 'dominio'])) {
+          if (ourPlate && botiPlate && !platesEqual(ourPlate, botiPlate)) {
+            // Mismatch! Reject by picking the "No" option.
+            const noKey = findMenuOption(menu, [['no']]);
+            if (noKey) {
+              await this.delay(500);
+              await this.sendMessage(noKey);
+              this.log(`Plate mismatch: ours=${ourPlate} boti=${botiPlate} → rejecting`);
+              this.emit('message', {
+                from: 'system',
+                text: `⚠️ Boti detectó "${botiPlate}" pero la patente real es "${ourPlate}". Le dijimos que NO.`
+              });
+              // Stay in WAITING_PLATE_PHOTO so we can re-send a photo (or in WAITING_PLATE_CONFIRM
+              // for Boti to ask for a different photo/cancel). Keep it simple: go back to PLATE_PHOTO.
+              this.state = STATES.WAITING_PLATE_PHOTO;
+              break;
+            }
+          }
+          // Match or no OCR comparison available → confirm
+          const yesKey = findMenuOption(menu, [['si'], ['esta bien'], ['correcto']]);
+          if (yesKey) {
+            await this.delay(500);
+            await this.sendMessage(yesKey);
+            if (botiPlate) this.log(`Plate confirmed: ${botiPlate}`);
+            this.state = STATES.WAITING_DATE;
+            this.emitProgress(80, 'Patente confirmada...');
+            break;
+          }
+        }
+        // Prose fallback
+        if (matchesAny(normalizedText, ['anote esta patente']) || (matchesAny(normalizedText, ['patente']) && matchesAny(normalizedText, ['a. si', 'esta bien']))) {
+          if (ourPlate && botiPlate && !platesEqual(ourPlate, botiPlate)) {
+            await this.delay(500);
+            await this.sendMessage('B');
+            this.emit('message', {
+              from: 'system',
+              text: `⚠️ Boti detectó "${botiPlate}" pero la patente real es "${ourPlate}". Le dijimos que NO.`
+            });
+            this.state = STATES.WAITING_PLATE_PHOTO;
+            break;
+          }
           await this.delay(500);
           await this.sendMessage('A');
           this.state = STATES.WAITING_DATE;
+          this.emitProgress(80, 'Enviando fecha...');
         }
         break;
-        
-      case STATES.WAITING_DATE:
-        // Bot asks for date
-        if (text.includes('Qué día viste') || text.includes('fecha')) {
+      }
+
+      case STATES.WAITING_DATE: {
+        // Boti asks for date first ("¿Qué día...?"), then separately for hour ("¿A qué hora...?").
+        // We send only what's being asked for at each step.
+        const isOnlyDate = matchesAny(normalizedText, ['que dia', 'cuando']) && !matchesAny(normalizedText, ['a que hora', 'horario']);
+        const isOnlyTime = matchesAny(normalizedText, ['a que hora', 'que hora', 'horario']) && !matchesAny(normalizedText, ['que dia']);
+        if (isOnlyDate) {
           await this.delay(500);
-          // Send "Ahora" if recent, otherwise send formatted date
-          const response = this.currentReport.isRecent ? 'Ahora' : this.currentReport.date;
+          const date = String(this.currentReport.date || '').trim() || 'Ahora';
+          await this.sendMessage(date);
+          this.state = STATES.WAITING_TIME;
+          this.emitProgress(82, 'Esperando prompt de hora...');
+          break;
+        }
+        if (isOnlyTime) {
+          await this.delay(500);
+          const time = String(this.currentReport.time || '').trim();
+          await this.sendMessage(time || 'Ahora');
+          this.state = STATES.WAITING_DESCRIPTION;
+          this.emitProgress(85, 'Enviando descripcion...');
+          break;
+        }
+        if (isDatePrompt(normalizedText)) {
+          // Legacy single-prompt path (Boti asks date+time in one go)
+          await this.delay(500);
+          const response = this.buildDateResponse(normalizedText);
           await this.sendMessage(response);
           this.state = STATES.WAITING_DESCRIPTION;
+          this.emitProgress(85, 'Enviando descripcion...');
         }
         break;
-        
+      }
+
+      case STATES.WAITING_TIME: {
+        // Hour-only prompt after we sent the date
+        if (matchesAny(normalizedText, ['a que hora', 'que hora', 'horario'])) {
+          await this.delay(500);
+          const time = String(this.currentReport.time || '').trim();
+          await this.sendMessage(time || 'Ahora');
+          this.state = STATES.WAITING_DESCRIPTION;
+          this.emitProgress(85, 'Enviando descripcion...');
+        }
+        break;
+      }
+
       case STATES.WAITING_DESCRIPTION:
         // Bot asks for description
-        if (text.includes('qué está pasando') || text.includes('un solo mensaje')) {
+        if (matchesAny(normalizedText, ['que esta pasando', 'un solo mensaje', 'describi', 'contanos', 'descripcion'])) {
           await this.delay(500);
           await this.sendMessage(this.currentReport.description);
           this.state = STATES.WAITING_FINAL_CONFIRM;
+          this.emitProgress(90, 'Confirmacion final...');
         }
         break;
-        
-      case STATES.WAITING_FINAL_CONFIRM:
+
+      case STATES.WAITING_FINAL_CONFIRM: {
         // Bot asks for final confirmation
-        if (text.includes('A. Seguir')) {
+        if (hasMenu) {
+          const key = findMenuOption(menu, CONFIRM_CONTINUE_KEYWORDS);
+          if (key) {
+            await this.delay(500);
+            await this.sendMessage(key);
+            break;
+          }
+        }
+        if (matchesAny(normalizedText, ['a. seguir', 'confirmar', 'enviar'])) {
           await this.delay(500);
           await this.sendMessage('A');
-        } else if (text.includes('número de trámite')) {
+        } else if (matchesAny(normalizedText, ['numero de tramite', 'tramite'])) {
           // Extract ticket number
-          const ticketMatch = text.match(/\d{8,}\/\d+/);
-          if (ticketMatch) {
-            this.currentReport.ticketNumber = ticketMatch[0];
+          const ticket = extractTicketNumber(text);
+          if (ticket) {
+            this.currentReport.ticketNumber = ticket;
           }
           this.state = STATES.COMPLETED;
+          this.emitProgress(100, 'Completado!');
           this.completeReport();
         }
         break;
+      }
+    }
+
+    // If state didn't advance and we're in an active state, schedule AI disambiguation
+    // EXCEPT for passive-wait states (login) where we wait silently for the user
+    if (this.state === prevState && this.state !== STATES.IDLE && this.state !== STATES.COMPLETED && this.state !== STATES.ERROR) {
+      if (PASSIVE_WAIT_STATES.has(this.state)) {
+        this.log(`Estado pasivo (${this.state}), esperando al usuario sin intervenir`);
+      } else {
+        this.log(`Mensaje no reconocido en estado ${this.state}: ${text.substring(0, 200)}`);
+        this.emit('message', { from: 'system', text: `Mensaje no reconocido en paso ${this.state}, IA intervendrá` });
+        this.scheduleAiDisambiguation();
+      }
+    }
+
+    // Reset state timer on any bot message
+    if (this.state !== STATES.IDLE && this.state !== STATES.COMPLETED && this.state !== STATES.ERROR) {
+      this.resetStateTimer();
     }
   }
-  
+
+  scheduleAiDisambiguation() {
+    clearTimeout(this.stuckTimer);
+    this.stuckTimer = setTimeout(() => this.runAiDisambiguation(), STATE_STUCK_TIMEOUT_MS);
+    // Don't keep the Node process alive just for this timer (matters in tests)
+    if (this.stuckTimer.unref) this.stuckTimer.unref();
+  }
+
+  async runAiDisambiguation() {
+    // Cancel any pending fire — we're running now
+    clearTimeout(this.stuckTimer);
+    this.stuckTimer = null;
+
+    if (this.aiCallsCount >= AI_MAX_CALLS_PER_REPORT) {
+      this.log('Tope de llamadas IA alcanzado, abandonando');
+      this.failReport(new Error('Se alcanzó el límite de intervenciones IA'));
+      return;
+    }
+    if (!this.lastBotMessage) return;
+    if (this.state === STATES.IDLE || this.state === STATES.COMPLETED || this.state === STATES.ERROR) return;
+
+    const ai = this.aiDisambiguate || (getAiAssistant() && getAiAssistant().disambiguateBotMessage);
+    if (!ai) {
+      this.log('IA no disponible para desambiguar');
+      return;
+    }
+
+    this.aiCallsCount += 1;
+    this.log(`IA desambiguando (${this.aiCallsCount}/${AI_MAX_CALLS_PER_REPORT})...`);
+
+    try {
+      const decision = await ai({
+        state: this.state,
+        botText: this.lastBotMessage,
+        history: this.history.slice(-10),
+        reportData: this.currentReport || {}
+      });
+      // Bail if the report was aborted while the AI call was in flight (e.g. fatal-error
+      // detector fired). Otherwise the AI's decision sends a stray reply after abort.
+      if (this.state === STATES.ERROR || this.state === STATES.IDLE || this.state === STATES.COMPLETED) {
+        this.log(`IA respondió "${decision.action}" pero el reporte ya terminó (${this.state}). Ignorando.`);
+        return;
+      }
+      this.log(`IA decidió: ${decision.action} (${decision.reason || ''})`);
+
+      switch (decision.action) {
+        case 'send_text':
+          if (decision.text) {
+            const ourPlate = this.currentReport?.detectedPlate;
+            const plateRelatedState = this.state === STATES.WAITING_PLATE_PHOTO || this.state === STATES.WAITING_PLATE_CONFIRM;
+            // 1) AI sent a placeholder/template like "[PATENTE AQUÍ]" — override with our real OCR
+            if (plateRelatedState && /\[[A-ZÁÉÍÓÚÑa-záéíóúñ ]+\]/.test(decision.text)) {
+              if (ourPlate) {
+                this.log(`IA usó placeholder en "${decision.text}", reemplazando con OCR: ${ourPlate}`);
+                await this.sendMessage(ourPlate);
+                this.history.push({ from: 'app', text: ourPlate });
+              } else {
+                this.failReport(new Error('IA quiso usar placeholder sin OCR disponible'));
+              }
+              break;
+            }
+            // 2) AI sent a plate-looking string that DOESN'T match our OCR — likely parroting Boti's wrong one
+            const looksLikePlate = /^[A-Z0-9\s]{5,9}$/i.test(decision.text.trim());
+            if (plateRelatedState && looksLikePlate && ourPlate) {
+              const sanitized = decision.text.toUpperCase().replace(/[^A-Z0-9]/g, '');
+              const oursSanitized = String(ourPlate).toUpperCase().replace(/[^A-Z0-9]/g, '');
+              if (sanitized !== oursSanitized) {
+                this.log(`IA quiso mandar "${decision.text}" pero nuestra OCR dice ${ourPlate}. Mandamos la nuestra.`);
+                await this.sendMessage(ourPlate);
+                this.history.push({ from: 'app', text: ourPlate });
+                break;
+              }
+            }
+            await this.sendMessage(decision.text);
+            this.history.push({ from: 'app', text: decision.text });
+          }
+          break;
+        case 'send_photo_context':
+          await this.sendPhoto(this.currentReport.contextPhotoPath);
+          this.history.push({ from: 'app', text: '[photo:context]' });
+          break;
+        case 'send_photo_plate':
+          await this.sendPhoto(this.currentReport.platePhotoPath);
+          this.history.push({ from: 'app', text: '[photo:plate]' });
+          break;
+        case 'wait':
+          // Just keep listening — re-arm the stuck timer in case nothing arrives
+          this.scheduleAiDisambiguation();
+          break;
+        case 'abort':
+          this.failReport(new Error('IA decidió abortar: ' + (decision.reason || 'sin razón')));
+          break;
+        default:
+          this.log(`Acción IA desconocida: ${decision.action}`);
+      }
+    } catch (error) {
+      this.log(`Error en IA: ${error.message}`);
+    }
+  }
+
+  failReport(error) {
+    clearTimeout(this.reportTimeout);
+    clearTimeout(this.stateTimer);
+    clearTimeout(this.stuckTimer);
+    this.state = STATES.ERROR;
+    if (this.reportReject) {
+      this.reportReject(error);
+    }
+  }
+
   /**
    * Send a text message to the BA bot
    */
   async sendMessage(text) {
     this.log(`Sending: ${text}`);
-    await this.client.sendMessage(BA_BOT_NUMBER, text);
+    // Emit BEFORE the network call so the UI feels instant
+    this.emit('message', { from: 'app', text });
+    this.history.push({ from: 'app', text });
+    const result = await this.sock.sendMessage(BA_BOT_NUMBER, { text });
+    if (result?.key?.id) {
+      this.log(`  msg id: ${result.key.id}`);
+    }
+    return result;
   }
-  
+
   /**
-   * Send a photo to the BA bot
+   * Send a photo to the BA bot. Compresses large files — Boti rejects >~2MB ("muy pesada").
    */
   async sendPhoto(filePath) {
-    this.log(`Sending photo: ${filePath}`);
-    const media = MessageMedia.fromFilePath(filePath);
-    await this.client.sendMessage(BA_BOT_NUMBER, media);
+    const buffer = await this._compressPhoto(filePath);
+    const fileName = filePath.split('/').pop();
+    this.log(`Sending photo: ${filePath} (${(buffer.length / 1024).toFixed(0)}KB)`);
+    this.emit('message', { from: 'app', text: `[📸 enviando foto: ${fileName} · ${(buffer.length / 1024).toFixed(0)}KB]` });
+    this.history.push({ from: 'app', text: `[photo:${fileName}]` });
+    await this.sock.sendMessage(BA_BOT_NUMBER, {
+      image: buffer,
+      mimetype: 'image/jpeg'
+    });
   }
-  
+
+  async _compressPhoto(filePath) {
+    const sharp = require('sharp');
+    const original = fs.readFileSync(filePath);
+    // Keep it conservative: standard baseline JPEG (NO mozjpeg — its progressive
+    // encoding has tripped Boti's vision pipeline). Preserve EXIF/ICC so Boti can
+    // use orientation + color profile. Resize so the long side is ≤ 1600 px.
+    const compressed = await sharp(original)
+      .rotate() // bake in EXIF orientation, since we then strip metadata
+      .resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 85, mozjpeg: false, progressive: false, chromaSubsampling: '4:2:0' })
+      .toBuffer();
+    this.log(`  compressed: ${(original.length / 1024).toFixed(0)}KB → ${(compressed.length / 1024).toFixed(0)}KB`);
+    return compressed;
+  }
+
+  /**
+   * Emit progress update — includes the current state so the renderer can
+   * display a friendly label in the chat header.
+   */
+  emitProgress(percent, description) {
+    this.emit('progress', { percent, description, state: this.state });
+  }
+
+  buildDateResponse(normalizedPrompt) {
+    if (this.currentReport.isRecent) {
+      return 'Ahora';
+    }
+
+    const date = String(this.currentReport.date || '').trim();
+    const time = String(this.currentReport.time || '').trim();
+    const promptMentionsTime = matchesAny(normalizedPrompt, ['hora', 'horario']);
+
+    if (promptMentionsTime && date && time) {
+      return `${date} ${time}`;
+    }
+    if (date) {
+      return date;
+    }
+    return 'Ahora';
+  }
+
+  /**
+   * Reset the per-state timeout timer (30s warning)
+   */
+  resetStateTimer() {
+    clearTimeout(this.stateTimer);
+    this.stateTimer = setTimeout(() => {
+      if (this.state !== STATES.IDLE && this.state !== STATES.COMPLETED && this.state !== STATES.ERROR) {
+        this.log(`Sin respuesta esperada en estado: ${this.state}`);
+        this.emit('message', {
+          from: 'system',
+          text: `Esperando respuesta del bot (estado: ${this.state})...`
+        });
+      }
+    }, 30000);
+    if (this.stateTimer.unref) this.stateTimer.unref();
+  }
+
   /**
    * Complete the report
    */
   completeReport() {
     clearTimeout(this.reportTimeout);
-    
+    clearTimeout(this.stateTimer);
+    clearTimeout(this.stuckTimer);
+
     const result = {
       success: true,
       ticketNumber: this.currentReport.ticketNumber,
       duration: new Date() - this.currentReport.startedAt,
-      logs: this.currentReport.logs
+      logs: this.currentReport.logs,
+      aiCallsCount: this.aiCallsCount
     };
-    
+
     this.emit('report-completed', result);
-    
+
     if (this.reportResolve) {
       this.reportResolve(result);
     }
-    
+
     this.currentReport = null;
     this.state = STATES.IDLE;
   }
-  
+
   /**
    * Log a message
    */
@@ -315,32 +1241,33 @@ class WhatsAppBot extends EventEmitter {
     const timestamp = new Date().toISOString();
     const logEntry = `[${timestamp}] ${message}`;
     console.log(logEntry);
-    
+
     if (this.currentReport) {
       this.currentReport.logs.push(logEntry);
     }
   }
-  
+
   /**
    * Helper delay function
    */
   delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
-  
+
   /**
    * Get current state
    */
   getState() {
     return this.state;
   }
-  
+
   /**
    * Destroy client
    */
   async destroy() {
-    if (this.client) {
-      await this.client.destroy();
+    if (this.sock) {
+      this.sock.end();
+      this.sock = null;
     }
   }
 }

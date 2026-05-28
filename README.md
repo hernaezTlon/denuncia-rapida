@@ -1,123 +1,138 @@
 # Denuncia Rápida 🚗
 
-Aplicación de escritorio para automatizar denuncias de mal estacionamiento en Buenos Aires a través del bot de WhatsApp de BA Ciudad.
+Aplicación de escritorio que **automatiza denuncias de mal estacionamiento** en la Ciudad de Buenos Aires usando el bot oficial de BA Ciudad en WhatsApp.
 
-## 🎯 ¿Qué hace?
+**Goal:** arrastrás una foto, la app se ocupa de todo.
 
-1. **Subís una foto** del auto mal estacionado
-2. **Extrae automáticamente:**
-   - Ubicación GPS → Dirección
-   - Fecha y hora de la foto
-3. **Se conecta a WhatsApp** y habla con el bot de BA Ciudad
-4. **Completa todo el proceso** automáticamente
-5. **Recibís el número de trámite** 🎉
+## ⚡ Cómo funciona
 
-## ⚠️ Advertencia
+1. **Arrastrás una foto** del auto en infracción
+2. La app:
+   - Lee GPS, fecha y hora de los metadatos EXIF
+   - Geocodifica la ubicación con OpenStreetMap (Nominatim)
+   - Clasifica el tipo de infracción con IA local (Ollama)
+   - Si la dirección está incompleta, intenta repararla con IA
+   - Conecta automáticamente al bot de BA Ciudad por WhatsApp
+   - Abre la ventana de login miBA (se completa una sola vez gracias a cookies persistentes)
+   - Conversa con el bot hasta recibir el número de trámite
+3. **Recibís el número de trámite** 🎉
 
-Esta app usa `whatsapp-web.js` que no es oficial y va contra los TOS de WhatsApp. Usala bajo tu propio riesgo. Recomendamos usar un número secundario.
+No hay clics intermedios entre subir la foto y recibir el ticket.
+
+## ⚠️ Antes de usar
+
+- Usa `baileys` (cliente WhatsApp no-oficial). Va contra los TOS de WhatsApp. Usá un número secundario.
+- Necesitás una cuenta de **miBA** (Mi Buenos Aires) — la app abre una ventana para que inicies sesión una sola vez.
+- Necesitás **Ollama** corriendo localmente con un modelo de visión (el modelo es gratis, corre 100% offline).
 
 ## 🛠️ Requisitos
 
-- Node.js 18 o superior
-- npm o yarn
-- Una cuenta de WhatsApp
+- Node.js 18+
+- [Ollama](https://ollama.com) instalado, con un modelo de visión:
+  ```bash
+  ollama pull gemma4:e4b
+  ```
+  *(O cualquier modelo vision-capable. Configurable con `OLLAMA_MODEL`.)*
+- Una cuenta de WhatsApp (preferentemente secundaria)
+- Una cuenta de miBA
 
 ## 🚀 Instalación
 
 ```bash
-# Clonar o descargar el proyecto
-cd denuncia-rapida
-
-# Instalar dependencias
 npm install
-
-# Ejecutar en modo desarrollo
-npm run dev
-
-# O ejecutar normalmente
-npm start
+ollama pull gemma4:e4b   # ~9GB, una sola vez
+npm run dev              # con DevTools abierta
+# o
+npm start                # producción
 ```
 
 ## 📱 Primer uso
 
-1. Abrí la app
-2. Hacé click en "Conectar WhatsApp"
-3. Escaneá el QR con WhatsApp (como WhatsApp Web)
-4. ¡Listo! La sesión se guarda para la próxima vez
+1. Abrí la app. Verifica que Ollama esté disponible (sale en el panel de log).
+2. Escaneá el QR de WhatsApp con tu celular. La sesión queda guardada en `~/.denuncia-rapida-session/` por semanas.
+3. Arrastrá la primera foto. La app inicia la conversación con el bot.
+4. Cuando el bot pida login miBA, se abrirá una ventana adentro de la app. Iniciá sesión una vez — las cookies persisten para próximas denuncias.
+5. La app sigue automáticamente hasta el ticket.
 
-## 🔄 Flujo de uso
+## 📸 Sobre las fotos
 
-```
-┌─────────────────┐
-│   Subir foto    │
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│ Verificar datos │  ← GPS, fecha, descripción
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│ Enviar denuncia │  ← Automático vía WhatsApp
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│ Nro de trámite  │  🎉
-└─────────────────┘
-```
+- **Con una foto alcanza.** Si arrastrás solo una, la app la usa tanto para el slot "contexto" como para "patente".
+- **GPS habilitado.** Sin coordenadas EXIF, la dirección no se autocompletará y la IA tampoco podrá ayudar.
+- **Foto reciente.** El bot acepta fotos viejas pero suele rechazarlas — apuntá a < 14 días.
+- **Patente visible.** El bot OCRea la patente automáticamente; si no se ve, te pedirá rehacer.
 
-## 📸 Tips para las fotos
+## 🤖 Cómo interviene la IA
 
-- **Asegurate que el GPS esté habilitado** en tu cámara/celular
-- La foto debe tener la **patente visible**
-- Mejor si también se ve el **contexto** (garage, rampa, etc.)
+El modelo Ollama local hace tres cosas, todas opcionales (la app funciona sin él, solo con menos automatización):
 
-## 🗂️ Estructura del proyecto
+| Cuándo | Qué hace |
+|---|---|
+| Al subir foto | Clasifica el tipo de infracción (8 categorías) viendo la imagen |
+| Si Nominatim falla o devuelve dirección incompleta | Intenta inferir la dirección desde la foto + GPS |
+| Si el bot manda un mensaje inesperado | Lee el contexto y decide qué responder (max 5 intervenciones por denuncia) |
+
+Todo corre en tu máquina. Cero llamadas a APIs externas, cero costo.
+
+## 🗂️ Estructura
 
 ```
-denuncia-rapida/
-├── src/
-│   ├── main/
-│   │   ├── main.js        # Proceso principal de Electron
-│   │   └── preload.js     # Puente seguro IPC
-│   ├── renderer/
-│   │   ├── index.html     # UI
-│   │   ├── styles.css     # Estilos
-│   │   └── app.js         # Lógica del frontend
-│   └── lib/
-│       ├── photoProcessor.js   # Extracción EXIF + geocoding
-│       └── whatsappBot.js      # Automatización WhatsApp
-└── package.json
+src/
+├── main/
+│   ├── main.js          # Electron main process + IPC
+│   └── preload.js       # Bridge a la UI con contextIsolation
+├── renderer/
+│   ├── index.html       # UI
+│   ├── styles.css
+│   └── app.js           # Lógica + auto-submit
+└── lib/
+    ├── photoProcessor.js   # EXIF + Nominatim
+    ├── whatsappBot.js      # State machine + AI disambiguation
+    ├── reportValidation.js # Validación soft (auto-repara)
+    ├── reportHistory.js    # Persiste cada denuncia en disco
+    ├── aiAssistant.js      # Wrapper Ollama (clasificación + reparación)
+    └── mibaAutoLogin.js    # BrowserWindow con sesión persistente
+test/
+└── *.test.js               # 37 tests
+scripts/
+└── install-app.sh           # Wrapper .app para macOS (osacompile)
 ```
 
 ## 🔧 Desarrollo
 
 ```bash
-# Modo desarrollo (con DevTools)
-npm run dev
-
-# La sesión de WhatsApp se guarda en:
-# ~/.denuncia-rapida-session/
+npm run dev          # Electron con DevTools
+npm test             # 37 tests
+npm run install-app  # Crea ~/Applications/Denuncia Rápida.app (macOS)
 ```
 
-## 📝 TODO / Mejoras futuras
+Configuración por variables de entorno:
 
-- [ ] OCR para detectar patentes automáticamente
-- [ ] Soporte para múltiples fotos (contexto + patente)
-- [ ] Historial de denuncias
-- [ ] Versión mobile (con servidor backend)
-- [ ] Notificaciones cuando cambie el estado del trámite
+| Variable | Default | Para qué |
+|---|---|---|
+| `OLLAMA_URL` | `http://localhost:11434` | Endpoint Ollama |
+| `OLLAMA_MODEL` | `gemma4:e4b` | Modelo de visión |
+| `DENUNCIA_REPORTS_DIR` | `~/.denuncia-rapida-session/reports` | Dónde se guardan los logs |
 
-## 🤝 Contribuciones
+Las denuncias enviadas (éxito o falla) quedan en `~/.denuncia-rapida-session/reports/<fecha>.json` con la transcripción completa.
 
-¡PRs bienvenidos! Especialmente para:
-- Mejorar la detección de estados del bot
-- Agregar OCR de patentes
-- Mejorar la UI/UX
+## 📝 Roadmap
+
+- [x] Migración a `baileys` v7
+- [x] Modo single-photo (una foto va a los dos slots)
+- [x] Clasificación IA del tipo de infracción
+- [x] Reparación IA de direcciones cuando Nominatim falla
+- [x] Auto-login miBA con cookies persistentes
+- [x] Validación soft (nunca bloquea, repara y avisa)
+- [x] Disambiguación IA cuando el bot manda algo inesperado
+- [x] Log persistente de denuncias
+- [ ] UI de historial (leer los JSON guardados)
+- [ ] OCR local de patentes (Tesseract) para cross-check con el bot
+- [ ] Wizard de primer arranque
 
 ## 📄 Licencia
 
-MIT - Usalo como quieras, pero bajo tu propia responsabilidad.
+MIT.
 
 ---
 
-Hecho con ☕ para los vecinos de Buenos Aires que quieren una ciudad mejor ordenada.
+Hecho para vecinos de Buenos Aires que quieren una ciudad mejor ordenada.

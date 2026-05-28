@@ -3,65 +3,168 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: file:; frame-src https://www.openstreetmap.org;">
   <title>Denuncia Rápida</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="app">
-    <!-- Header -->
-    <header class="header">
-      <div class="logo">
-        <span class="logo-icon">🚗</span>
-        <h1>Denuncia Rápida</h1>
+    <!-- TOP RAIL: brand · stepper · system status -->
+    <header class="top-rail">
+      <div class="brand">
+        <div class="brand-mark">DR</div>
+        <div class="brand-meta">
+          <span class="brand-name">Denuncia Rápida</span>
+          <span class="brand-tag">despacho de denuncias · ba ciudad</span>
+        </div>
       </div>
-      <div class="whatsapp-status" id="whatsappStatus">
-        <span class="status-dot disconnected"></span>
-        <span class="status-text">WhatsApp desconectado</span>
-      </div>
+
+      <ol class="stepper" id="stepper">
+        <li class="step is-active" data-step="1"><span class="step-num">01</span><span class="step-label">Foto</span></li>
+        <li class="step" data-step="2"><span class="step-num">02</span><span class="step-label">Datos</span></li>
+        <li class="step" data-step="3"><span class="step-num">03</span><span class="step-label">Login</span></li>
+        <li class="step" data-step="4"><span class="step-num">04</span><span class="step-label">Envío</span></li>
+        <li class="step" data-step="5"><span class="step-num">05</span><span class="step-label">Listo</span></li>
+      </ol>
+
+      <button class="rail-btn" id="historyToggle" title="Mis denuncias">
+        <span class="rail-btn-icon">▤</span>
+        <span class="rail-btn-label">Historial</span>
+      </button>
     </header>
 
-    <!-- Main Content -->
-    <main class="main">
-      <!-- Step 1: Photo Upload -->
-      <section class="card" id="photoSection">
-        <h2>📸 Subí la foto</h2>
-        <p class="subtitle">Arrastrá una foto o hacé click para seleccionar</p>
-        
-        <div class="dropzone" id="dropzone">
-          <div class="dropzone-content">
-            <span class="dropzone-icon">📁</span>
-            <p>Soltar foto aquí</p>
-            <button class="btn btn-secondary" id="selectFileBtn">Seleccionar archivo</button>
-          </div>
-        </div>
-        
-        <!-- Photo Preview -->
-        <div class="photo-preview hidden" id="photoPreview">
-          <img id="previewImage" alt="Preview">
-          <button class="btn-remove" id="removePhotoBtn">✕</button>
-        </div>
-      </section>
+    <!-- STATUS BAR: at-a-glance system health -->
+    <div class="status-bar">
+      <div class="status-item" id="statusWhatsapp" data-state="off">
+        <span class="status-dot"></span>
+        <span class="status-name">WhatsApp</span>
+        <span class="status-value" id="statusWhatsappValue">desconectado</span>
+      </div>
+      <div class="status-item" id="statusOllama" data-state="off">
+        <span class="status-dot"></span>
+        <span class="status-name">IA local</span>
+        <span class="status-value" id="statusOllamaValue">verificando…</span>
+      </div>
+      <div class="status-item" id="statusMiba" data-state="off">
+        <span class="status-dot"></span>
+        <span class="status-name">miBA</span>
+        <span class="status-value" id="statusMibaValue">sin sesión</span>
+      </div>
+      <div class="status-spacer"></div>
+      <div class="status-clock" id="statusClock">--:--</div>
+    </div>
 
-      <!-- Step 2: Extracted Data -->
-      <section class="card hidden" id="dataSection">
-        <h2>📍 Datos extraídos</h2>
-        
-        <div class="data-grid">
-          <div class="data-item">
-            <label>Dirección</label>
-            <input type="text" id="addressInput" placeholder="Cargando...">
-            <span class="data-source" id="addressSource"></span>
+    <!-- MAIN GRID -->
+    <main class="main-grid">
+      <!-- LEFT COLUMN: photo + data + submit -->
+      <section class="col-left">
+        <!-- Photo upload -->
+        <section class="card photo-card" id="photoSection">
+          <div class="card-head">
+            <span class="card-eyebrow">01 · captura</span>
+            <h2 class="card-title">Subí la foto</h2>
           </div>
-          
-          <div class="data-item">
-            <label>Fecha</label>
-            <input type="text" id="dateInput" placeholder="Cargando...">
-            <span class="data-source" id="dateSource"></span>
+
+          <div class="photo-stage" id="photoStage">
+            <div class="dropzone" id="contextDropzone">
+              <div class="dropzone-inner">
+                <svg class="dropzone-icon" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="6" y="14" width="52" height="38" rx="4"/>
+                  <circle cx="32" cy="32" r="9"/>
+                  <circle cx="32" cy="32" r="3" fill="currentColor"/>
+                  <path d="M22 14l4-6h12l4 6"/>
+                </svg>
+                <div class="dropzone-cta">arrastrá la foto</div>
+                <div class="dropzone-hint">o hacé click para elegir · jpg, png, heic, dng</div>
+              </div>
+            </div>
+            <div class="photo-preview" id="contextPreview" hidden>
+              <img id="contextImage" alt="">
+              <div class="photo-spinner" id="contextSpinner" hidden>
+                <div class="spinner"></div>
+                <span>procesando…</span>
+              </div>
+              <button class="photo-remove" data-photo="context" title="Quitar foto">✕</button>
+              <div class="photo-meta" id="contextMeta"></div>
+            </div>
           </div>
-          
-          <div class="data-item">
-            <label>Descripción</label>
+
+          <details class="extra-photo">
+            <summary>Agregar close-up de patente por separado</summary>
+            <div class="photo-stage photo-stage-small">
+              <div class="dropzone" id="plateDropzone">
+                <div class="dropzone-inner">
+                  <svg class="dropzone-icon-small" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="7" width="18" height="10" rx="1"/>
+                  </svg>
+                  <div class="dropzone-cta-small">arrastrá la patente</div>
+                </div>
+              </div>
+              <div class="photo-preview photo-preview-small" id="platePreview" hidden>
+                <img id="plateImage" alt="">
+                <div class="photo-spinner" id="plateSpinner" hidden>
+                  <div class="spinner"></div>
+                </div>
+                <button class="photo-remove" data-photo="plate" title="Quitar foto">✕</button>
+              </div>
+            </div>
+          </details>
+        </section>
+
+        <!-- Extracted data -->
+        <section class="card data-card hidden" id="dataSection">
+          <div class="card-head">
+            <span class="card-eyebrow">02 · datos extraídos</span>
+            <h2 class="card-title">Verificá la denuncia</h2>
+          </div>
+
+          <!-- THE plate hero — styled like a real Argentine MERCOSUR plate -->
+          <div class="plate-hero" id="plateHero" data-state="empty">
+            <div class="plate-banner">
+              <span class="plate-banner-dot">★</span>
+              <span class="plate-banner-text">MERCOSUR · REPÚBLICA ARGENTINA</span>
+              <span class="plate-banner-flag">🇦🇷</span>
+            </div>
+            <div class="plate-body">
+              <div class="plate-number" id="plateValue">—</div>
+            </div>
+            <div class="plate-footer">
+              <span class="plate-meta" id="plateMeta">esperando foto</span>
+            </div>
+          </div>
+
+          <div class="data-row">
+            <label class="data-label" for="addressInput">
+              <span class="data-label-num">03</span>
+              <span>Dirección</span>
+            </label>
+            <div class="data-input-wrap">
+              <input type="text" id="addressInput" placeholder="—" autocomplete="off">
+              <button class="data-input-action" id="openMapBtn" title="Ver en mapa">↗</button>
+            </div>
+            <span class="data-hint" id="addressSource"></span>
+          </div>
+
+          <div class="data-row">
+            <label class="data-label" for="dateInput">
+              <span class="data-label-num">04</span>
+              <span>Fecha · hora</span>
+            </label>
+            <div class="data-twin">
+              <input type="text" id="dateInput" placeholder="DD/MM/AAAA" autocomplete="off">
+              <input type="text" id="timeDisplay" placeholder="HH:MM" autocomplete="off" disabled>
+            </div>
+            <span class="data-hint" id="dateSource"></span>
+          </div>
+
+          <div class="data-row">
+            <label class="data-label" for="descriptionSelect">
+              <span class="data-label-num">05</span>
+              <span>Tipo de infracción</span>
+            </label>
             <select id="descriptionSelect">
               <option value="Estacionado en entrada de garage">Entrada de garage</option>
               <option value="Estacionado en doble fila">Doble fila</option>
@@ -69,92 +172,129 @@
               <option value="Estacionado en rampa de discapacitados">Rampa de discapacitados</option>
               <option value="Estacionado en parada de colectivo">Parada de colectivo</option>
               <option value="Estacionado en paso peatonal">Paso peatonal</option>
-              <option value="custom">Personalizado...</option>
+              <option value="Estacionado en ochava">Ochava</option>
+              <option value="Estacionado en lugar prohibido">Lugar prohibido</option>
+              <option value="custom">Personalizado…</option>
             </select>
-            <input type="text" id="customDescription" class="hidden" placeholder="Escribí la descripción...">
+            <input type="text" id="customDescription" class="hidden" placeholder="Escribí la descripción…">
           </div>
-        </div>
-        
-        <div class="map-container" id="mapContainer">
-          <div class="map-placeholder">
-            <span>🗺️</span>
-            <p>Mapa no disponible</p>
+
+          <div class="map-frame">
+            <iframe id="mapFrame" width="100%" height="180" frameborder="0" scrolling="no"></iframe>
+            <div class="map-frame-empty" id="mapEmpty">
+              <span>📍 Sin GPS aún</span>
+            </div>
           </div>
-        </div>
+
+          <button class="primary-action" id="submitBtn" disabled>
+            <span class="primary-action-label">Enviar denuncia</span>
+            <span class="primary-action-meta" id="submitHint">arrastrá una foto para empezar</span>
+            <svg class="primary-action-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M5 12h14M13 5l7 7-7 7"/>
+            </svg>
+          </button>
+        </section>
       </section>
 
-      <!-- Step 3: WhatsApp Connection -->
-      <section class="card hidden" id="whatsappSection">
-        <h2>💬 Conexión WhatsApp</h2>
-        
-        <div class="qr-container hidden" id="qrContainer">
-          <p>Escaneá el código QR con WhatsApp:</p>
-          <div class="qr-code" id="qrCode"></div>
-        </div>
-        
-        <div class="connected-message hidden" id="connectedMessage">
-          <span class="check-icon">✅</span>
-          <p>WhatsApp conectado</p>
-        </div>
-        
-        <button class="btn btn-primary" id="connectWhatsAppBtn">Conectar WhatsApp</button>
-      </section>
+      <!-- RIGHT COLUMN: live chat + login banner -->
+      <aside class="col-right">
+        <!-- WhatsApp QR / login banners -->
+        <section class="card qr-card hidden" id="qrCard">
+          <div class="card-head">
+            <span class="card-eyebrow">conectar whatsapp</span>
+            <h2 class="card-title">Escaneá el QR</h2>
+          </div>
+          <div class="qr-frame" id="qrCode"></div>
+          <p class="qr-hint">Abrí WhatsApp · Configuración · Dispositivos vinculados.</p>
+        </section>
 
-      <!-- Step 4: Submit -->
-      <section class="card hidden" id="submitSection">
-        <h2>🚀 Enviar denuncia</h2>
-        
-        <div class="summary">
-          <div class="summary-item">
-            <span class="summary-label">Dirección:</span>
-            <span class="summary-value" id="summaryAddress">-</span>
+        <section class="card login-card hidden" id="loginCard">
+          <div class="card-head">
+            <span class="card-eyebrow">paso 03 · pausado</span>
+            <h2 class="card-title">Login miBA</h2>
           </div>
-          <div class="summary-item">
-            <span class="summary-label">Fecha:</span>
-            <span class="summary-value" id="summaryDate">-</span>
-          </div>
-          <div class="summary-item">
-            <span class="summary-label">Descripción:</span>
-            <span class="summary-value" id="summaryDescription">-</span>
-          </div>
-        </div>
-        
-        <button class="btn btn-large btn-success" id="submitBtn">
-          Enviar denuncia automáticamente
-        </button>
-        
-        <div class="progress-container hidden" id="progressContainer">
-          <div class="progress-bar">
-            <div class="progress-fill" id="progressFill"></div>
-          </div>
-          <p class="progress-text" id="progressText">Iniciando...</p>
-        </div>
-      </section>
+          <p class="login-text">Se abrió una ventana adentro de la app. Ingresá usuario y contraseña — la próxima vez entra solo.</p>
+          <p class="login-meta">Tomate el tiempo que necesites · el envío está pausado.</p>
+          <button class="ghost-btn" id="openLoginBtn">Si no se abrió, abrir en mi navegador</button>
+        </section>
 
-      <!-- Result -->
-      <section class="card hidden" id="resultSection">
-        <div class="result-success hidden" id="resultSuccess">
-          <span class="result-icon">🎉</span>
-          <h2>¡Denuncia enviada!</h2>
-          <p>Número de trámite:</p>
-          <div class="ticket-number" id="ticketNumber">-</div>
-          <button class="btn btn-primary" id="newReportBtn">Nueva denuncia</button>
-        </div>
-        
-        <div class="result-error hidden" id="resultError">
-          <span class="result-icon">❌</span>
-          <h2>Error</h2>
-          <p id="errorMessage">-</p>
-          <button class="btn btn-secondary" id="retryBtn">Reintentar</button>
-        </div>
-      </section>
+        <!-- Live chat with Boti — the centerpiece during submission -->
+        <section class="card chat-card" id="chatSection">
+          <div class="chat-head">
+            <div>
+              <span class="card-eyebrow">conversación en vivo</span>
+              <h2 class="card-title">Boti · BA Ciudad</h2>
+            </div>
+            <div class="chat-state" id="chatState">
+              <span class="chat-state-dot"></span>
+              <span id="chatStateLabel">en espera</span>
+            </div>
+          </div>
+          <div class="chat-messages" id="chatMessages">
+            <div class="chat-empty">
+              <span>Acá vas a ver la conversación con el bot oficial cuando arranque la denuncia.</span>
+            </div>
+          </div>
+        </section>
+      </aside>
     </main>
 
-    <!-- Log Panel (collapsible) -->
+    <!-- SUCCESS OVERLAY -->
+    <div class="overlay overlay-success hidden" id="resultSuccess">
+      <div class="confetti-layer" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <div class="success-card">
+        <div class="success-eyebrow">denuncia registrada</div>
+        <div class="success-title">N° de trámite</div>
+        <div class="success-ticket" id="ticketNumber">—</div>
+        <div class="success-actions">
+          <button class="ghost-btn" id="copyTicketBtn">
+            <span id="copyTicketLabel">Copiar</span>
+          </button>
+          <button class="primary-action primary-action-compact" id="newReportBtn">
+            <span class="primary-action-label">Nueva denuncia</span>
+          </button>
+        </div>
+        <div class="success-foot">
+          <span>guardada en <code>~/.denuncia-rapida-session/reports</code></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ERROR OVERLAY -->
+    <div class="overlay overlay-error hidden" id="resultError">
+      <div class="error-card">
+        <div class="error-eyebrow" id="errorEyebrow">no se pudo enviar</div>
+        <div class="error-title" id="errorTitle">Error</div>
+        <p class="error-message" id="errorMessage">—</p>
+        <div class="error-countdown hidden" id="errorCountdown">
+          <span class="error-countdown-label">próximo intento sugerido en</span>
+          <span class="error-countdown-time" id="errorCountdownTime">--:--</span>
+        </div>
+        <div class="error-actions">
+          <button class="ghost-btn" id="retryBtn">Reintentar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- HISTORY PANEL -->
+    <aside class="history-panel hidden" id="historyPanel">
+      <div class="history-head">
+        <h2 class="card-title">Mis denuncias</h2>
+        <button class="ghost-btn ghost-btn-small" id="historyClose">cerrar</button>
+      </div>
+      <div class="history-list" id="historyList">
+        <div class="history-empty">Sin denuncias guardadas todavía.</div>
+      </div>
+    </aside>
+
+    <!-- DEV LOG (collapsible, bottom) -->
     <aside class="log-panel" id="logPanel">
       <button class="log-toggle" id="logToggle">
-        <span>📋 Registro</span>
-        <span class="toggle-icon">▼</span>
+        <span>↳ log técnico</span>
+        <span class="toggle-icon">▴</span>
       </button>
       <div class="log-content hidden" id="logContent">
         <div class="log-entries" id="logEntries"></div>

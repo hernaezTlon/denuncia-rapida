@@ -1,0 +1,19 @@
+node_modules/
+.wwebjs_cache/
+.wwebjs_auth/
+auth_info_baileys/
+dist/
+out/
+*.log
+.DS_Store
+.env
+.env.local
+
+# User test fixtures + session
+IMG_*.JPG
+IMG_*.jpg
+.denuncia-rapida-session/
+
+# OCR model files (downloaded at runtime, not source)
+*.traineddata
+eng.traineddata

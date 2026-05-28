@@ -1,0 +1,74 @@
+{
+  "name": "variant-no-accents",
+  "report": {
+    "address": "AV CABILDO [AGREGAR NÚMERO]",
+    "date": "01/02/2026",
+    "time": "09:31",
+    "description": "Vehiculo bloqueando salida de garage.",
+    "contextPhotoPath": "/tmp/context-2.jpg",
+    "platePhotoPath": "/tmp/plate-2.jpg",
+    "isRecent": false
+  },
+  "steps": [
+    {
+      "bot": "Menu vehiculos y estacionamiento.",
+      "expect": { "sendText": "A", "state": "waiting_category" }
+    },
+    {
+      "bot": "Categoria: mal estacionado",
+      "expect": { "sendText": "A", "state": "waiting_subcategory" }
+    },
+    {
+      "bot": "si tenes todo listo",
+      "expect": { "sendText": "A", "state": "waiting_confirm_start" }
+    },
+    {
+      "bot": "para continuar iniciar sesion: botm.cc/zxy987",
+      "expect": { "state": "waiting_login", "loginUrl": "https://botm.cc/zxy987" }
+    },
+    {
+      "bot": "sesion iniciada",
+      "expect": { "state": "waiting_email_confirm" }
+    },
+    {
+      "bot": "correo correcto? A. esta bien",
+      "expect": { "sendText": "A", "state": "waiting_address_input" }
+    },
+    {
+      "bot": "pasa direccion o ubicacion",
+      "expect": { "sendText": "AV CABILDO", "state": "waiting_address_confirm" }
+    },
+    {
+      "bot": "enviame una foto donde esta estacionado",
+      "expect": { "sendPhoto": "/tmp/context-2.jpg", "state": "waiting_plate_photo" }
+    },
+    {
+      "bot": "foto patente por favor",
+      "expect": { "sendPhoto": "/tmp/plate-2.jpg", "state": "waiting_plate_confirm" }
+    },
+    {
+      "bot": "patente anotada A. Si",
+      "expect": { "sendText": "A", "state": "waiting_date" }
+    },
+    {
+      "bot": "que dia lo viste?",
+      "expect": { "sendText": "01/02/2026", "state": "waiting_time" }
+    },
+    {
+      "bot": "a que hora sacaste la foto?",
+      "expect": { "sendText": "09:31", "state": "waiting_description" }
+    },
+    {
+      "bot": "describi que esta pasando",
+      "expect": { "sendText": "Vehiculo bloqueando salida de garage.", "state": "waiting_final_confirm" }
+    },
+    {
+      "bot": "confirmar envio",
+      "expect": { "sendText": "A", "state": "waiting_final_confirm" }
+    },
+    {
+      "bot": "numero de tramite 87654321/2026",
+      "expect": { "state": "idle", "ticket": "87654321/2026" }
+    }
+  ]
+}
