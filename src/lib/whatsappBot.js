@@ -132,6 +132,13 @@ function cleanAddress(address) {
     .trim();
 }
 
+// Boti's HOUR step needs HH:MM (it does NOT accept "Ahora" there — only the date step does).
+// When we don't know the time, fall back to the current local time.
+function currentTimeHHMM() {
+  const now = new Date();
+  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+}
+
 /**
  * Parse a Boti menu like:
  *   "Puedo ayudarte con:\nA. Habilitar remis\nB. ...\nH. Auto mal estacionado"
@@ -233,6 +240,11 @@ class WhatsAppBot extends EventEmitter {
     this.stuckTimer = null;
     this.aiDisambiguate = null; // injectable for tests
     this.actualBotJid = null; // captured from first inbound reply
+    // Burst debounce: wait for Boti to stop sending before responding
+    this.settleMs = 2500;
+    this._burst = [];
+    this.settleTimer = null;
+    this._sendCount = 0;
   }
 
   async initialize() {
@@ -453,17 +465,105 @@ class WhatsAppBot extends EventEmitter {
   }
 
   /**
-   * Handle responses from the BA bot
+   * Handle a raw bot message. Boti sends messages in BURSTS (intro, warnings, then the
+   * actual menu). Reacting to an early message desyncs us, so we debounce: record the
+   * message for the live UI + check for fatal signals immediately, but wait for Boti to
+   * go quiet (settleMs) before processing the burst as a unit.
    */
   async handleBotResponse(text) {
     this.log(`Bot: ${text.substring(0, 100)}...`);
     this.emit('message', { from: 'bot', text });
     this.lastBotMessage = text;
     this.history.push({ from: 'bot', text });
-    // Cancel any pending stuck check since a new bot message arrived
     clearTimeout(this.stuckTimer);
 
-    const prevState = this.state;
+    // Fatal signals abort immediately — no point waiting to settle.
+    if (this._detectFatal(text)) return;
+
+    this._burst.push(text);
+    clearTimeout(this.settleTimer);
+    if (this.settleMs <= 0) {
+      await this._drainBurst(); // synchronous path (tests)
+    } else {
+      this.settleTimer = setTimeout(() => {
+        this._drainBurst().catch((e) => this.log(`drainBurst error: ${e.message}`));
+      }, this.settleMs);
+      if (this.settleTimer.unref) this.settleTimer.unref();
+    }
+  }
+
+  // Boti's terminal failures. Returns true if it aborted the report.
+  _detectFatal(text) {
+    if (this.state === STATES.IDLE || this.state === STATES.ERROR) return false;
+    const normalizedText = normalizeBotText(text);
+    if (matchesAny(normalizedText, ['no pude enviar', 'algo anduvo mal', 'sigue fallando el envio'])) {
+      this.log('Boti reportó fallo del servidor BA Ciudad. Abortando.');
+      this.emit('message', { from: 'system', text: 'BA Ciudad falló al guardar la denuncia (servidor de ellos). Probá más tarde.' });
+      this.failReport(new Error('BA Ciudad no pudo guardar la denuncia (error del servidor). Reintentá en unos minutos.'));
+      return true;
+    }
+    // Photo-rejection signals only mean "bad photo" while we're at a photo step. Later
+    // (date/hour/description) the same words just mean Boti didn't parse our last text —
+    // let the normal handlers / AI recover instead of aborting the whole report.
+    const photoStates = [STATES.WAITING_CONTEXT_PHOTO, STATES.WAITING_PLATE_PHOTO, STATES.WAITING_PLATE_CONFIRM];
+    if (photoStates.includes(this.state) &&
+        matchesAny(normalizedText, ['no entendi ese archivo', 'sigo sin entender', 'no pude reconocer'])) {
+      this.log('Boti no entendió la foto. Abortando.');
+      this.emit('message', { from: 'system', text: 'Boti rechazó la foto ("no entendí ese archivo"). Probá con una foto más clara o más cercana del vehículo.' });
+      this.failReport(new Error('Boti no pudo procesar la foto. Probá con otra foto.'));
+      return true;
+    }
+    if (matchesAny(normalizedText, ['hables con una persona', 'hablar con una persona'])) {
+      this.log('Boti se rindió ("hablar con una persona"). Abortando.');
+      this.emit('message', { from: 'system', text: 'Boti se confundió con el flujo (suele pasar justo después de una denuncia exitosa). Esperá 5 minutos y reintentá.' });
+      this.failReport(new Error('Boti perdió contexto. Esperá unos minutos antes de reintentar.'));
+      return true;
+    }
+    const prePhotoStates = [STATES.WAITING_MENU, STATES.WAITING_CATEGORY, STATES.WAITING_SUBCATEGORY, STATES.WAITING_CONFIRM_START];
+    if (prePhotoStates.includes(this.state) &&
+        matchesAny(normalizedText, ['revisar multas', 'consultar mis puntos', 'suscripciones ba', 'escribime tu patente', 'terminos y condiciones'])) {
+      this.log('Boti nos metió en el flujo de Revisar Multas. Abortando.');
+      this.emit('message', { from: 'system', text: 'Boti se metió en el flujo de "Revisar multas" (no es el de denuncia). Esperá un par de minutos antes de reintentar.' });
+      this.failReport(new Error('Boti se confundió de flujo. Reintentá en unos minutos.'));
+      return true;
+    }
+    return false;
+  }
+
+  // Process the buffered burst once Boti goes quiet. Replays messages through the state
+  // machine in order, stopping after the first one that produces an action.
+  async _drainBurst() {
+    const msgs = this._burst;
+    this._burst = [];
+    if (msgs.length === 0) return;
+    const stateBefore = this.state;
+    const sendsBefore = this._sendCount;
+    for (const text of msgs) {
+      if (this.state === STATES.IDLE || this.state === STATES.COMPLETED || this.state === STATES.ERROR) break;
+      await this._respondTo(text);
+      // Break only once we've actually SENT a response. A bare state transition without a
+      // send (e.g. login-success → email-confirm, or capturing a login URL) must NOT stop
+      // the burst — the next prompt in the same burst still needs handling in the new state.
+      if (this._sendCount > sendsBefore) break;
+    }
+    // If the whole burst produced nothing, let the AI step in (except in passive states)
+    if (this.state === stateBefore && this._sendCount === sendsBefore &&
+        this.state !== STATES.IDLE && this.state !== STATES.COMPLETED && this.state !== STATES.ERROR) {
+      if (PASSIVE_WAIT_STATES.has(this.state)) {
+        this.log(`Estado pasivo (${this.state}), esperando al usuario sin intervenir`);
+      } else {
+        this.log(`Mensaje no reconocido en estado ${this.state}`);
+        this.emit('message', { from: 'system', text: `Mensaje no reconocido en paso ${this.state}, IA intervendrá` });
+        this.scheduleAiDisambiguation();
+      }
+    }
+    if (this.state !== STATES.IDLE && this.state !== STATES.COMPLETED && this.state !== STATES.ERROR) {
+      this.resetStateTimer();
+    }
+  }
+
+  // Respond to a single bot message: plate-by-text, keyword search, or the state switch.
+  async _respondTo(text) {
     const normalizedText = normalizeBotText(text);
 
     // Global handler: if Boti asks for the plate as text (Boti sends 2-3 messages in a row
@@ -496,59 +596,6 @@ class WhatsAppBot extends EventEmitter {
           text: 'Boti pide la patente por texto pero no tenemos OCR confiable. Probá con un close-up.'
         });
         this.failReport(new Error('Boti pidió patente por texto y no tenemos OCR confiable'));
-        return;
-      }
-    }
-
-    // Boti's terminal failures: detected ONCE and we abort the loop so the AI doesn't
-    // burn its budget trying to navigate Boti's "do you want to try again" menus.
-    if (this.state !== STATES.IDLE && this.state !== STATES.ERROR) {
-      // Server-side: backend rejected the already-completed submission
-      if (matchesAny(normalizedText, ['no pude enviar', 'algo anduvo mal', 'sigue fallando el envio'])) {
-        this.log('Boti reportó fallo del servidor BA Ciudad. Abortando.');
-        this.emit('message', { from: 'system', text: 'BA Ciudad falló al guardar la denuncia (servidor de ellos). Probá más tarde.' });
-        this.failReport(new Error('BA Ciudad no pudo guardar la denuncia (error del servidor). Reintentá en unos minutos.'));
-        return;
-      }
-      // Photo rejected — Boti's vision pipeline couldn't read the image at all. After
-      // this Boti dumps the user into the top-level menu; navigating back is futile.
-      if (matchesAny(normalizedText, ['no entendi ese archivo', 'sigo sin entender', 'no pude reconocer'])) {
-        this.log('Boti no entendió la foto. Abortando.');
-        this.emit('message', {
-          from: 'system',
-          text: 'Boti rechazó la foto ("no entendí ese archivo"). Probá con una foto más clara o más cercana del vehículo.'
-        });
-        this.failReport(new Error('Boti no pudo procesar la foto. Probá con otra foto.'));
-        return;
-      }
-      // Boti gave up and wants to hand off to a human — irrecoverable
-      if (matchesAny(normalizedText, ['hables con una persona', 'hablar con una persona'])) {
-        this.log('Boti se rindió ("hablar con una persona"). Abortando.');
-        this.emit('message', {
-          from: 'system',
-          text: 'Boti se confundió con el flujo (suele pasar justo después de una denuncia exitosa). Esperá 5 minutos y reintentá.'
-        });
-        this.failReport(new Error('Boti perdió contexto. Esperá unos minutos antes de reintentar.'));
-        return;
-      }
-      // Wrong-flow detection: Boti routed us into "Revisar multas" / "Consultar mis puntos" /
-      // "Suscripciones BA" — these are for the user's OWN tickets, not for filing a denuncia.
-      // Pre-photo states only (no false-positive once we're past the address step).
-      const prePhotoStates = [
-        STATES.WAITING_MENU, STATES.WAITING_CATEGORY, STATES.WAITING_SUBCATEGORY,
-        STATES.WAITING_CONFIRM_START
-      ];
-      if (prePhotoStates.includes(this.state) &&
-          matchesAny(normalizedText, [
-            'revisar multas', 'consultar mis puntos', 'suscripciones ba',
-            'escribime tu patente', 'terminos y condiciones'
-          ])) {
-        this.log('Boti nos metió en el flujo de Revisar Multas. Abortando.');
-        this.emit('message', {
-          from: 'system',
-          text: 'Boti se metió en el flujo de "Revisar multas" (no es el de denuncia). Esperá un par de minutos antes de reintentar.'
-        });
-        this.failReport(new Error('Boti se confundió de flujo. Reintentá en unos minutos.'));
         return;
       }
     }
@@ -928,7 +975,7 @@ class WhatsAppBot extends EventEmitter {
         if (isOnlyTime) {
           await this.delay(500);
           const time = String(this.currentReport.time || '').trim();
-          await this.sendMessage(time || 'Ahora');
+          await this.sendMessage(time || currentTimeHHMM());
           this.state = STATES.WAITING_DESCRIPTION;
           this.emitProgress(85, 'Enviando descripcion...');
           break;
@@ -949,7 +996,7 @@ class WhatsAppBot extends EventEmitter {
         if (matchesAny(normalizedText, ['a que hora', 'que hora', 'horario'])) {
           await this.delay(500);
           const time = String(this.currentReport.time || '').trim();
-          await this.sendMessage(time || 'Ahora');
+          await this.sendMessage(time || currentTimeHHMM());
           this.state = STATES.WAITING_DESCRIPTION;
           this.emitProgress(85, 'Enviando descripcion...');
         }
@@ -993,22 +1040,6 @@ class WhatsAppBot extends EventEmitter {
       }
     }
 
-    // If state didn't advance and we're in an active state, schedule AI disambiguation
-    // EXCEPT for passive-wait states (login) where we wait silently for the user
-    if (this.state === prevState && this.state !== STATES.IDLE && this.state !== STATES.COMPLETED && this.state !== STATES.ERROR) {
-      if (PASSIVE_WAIT_STATES.has(this.state)) {
-        this.log(`Estado pasivo (${this.state}), esperando al usuario sin intervenir`);
-      } else {
-        this.log(`Mensaje no reconocido en estado ${this.state}: ${text.substring(0, 200)}`);
-        this.emit('message', { from: 'system', text: `Mensaje no reconocido en paso ${this.state}, IA intervendrá` });
-        this.scheduleAiDisambiguation();
-      }
-    }
-
-    // Reset state timer on any bot message
-    if (this.state !== STATES.IDLE && this.state !== STATES.COMPLETED && this.state !== STATES.ERROR) {
-      this.resetStateTimer();
-    }
   }
 
   scheduleAiDisambiguation() {
@@ -1125,6 +1156,7 @@ class WhatsAppBot extends EventEmitter {
    */
   async sendMessage(text) {
     this.log(`Sending: ${text}`);
+    this._sendCount++;
     // Emit BEFORE the network call so the UI feels instant
     this.emit('message', { from: 'app', text });
     this.history.push({ from: 'app', text });
@@ -1139,6 +1171,7 @@ class WhatsAppBot extends EventEmitter {
    * Send a photo to the BA bot. Compresses large files — Boti rejects >~2MB ("muy pesada").
    */
   async sendPhoto(filePath) {
+    this._sendCount++;
     const buffer = await this._compressPhoto(filePath);
     const fileName = filePath.split('/').pop();
     this.log(`Sending photo: ${filePath} (${(buffer.length / 1024).toFixed(0)}KB)`);

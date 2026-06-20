@@ -223,9 +223,13 @@
             <span class="card-eyebrow">paso 03 · pausado</span>
             <h2 class="card-title">Login miBA</h2>
           </div>
-          <p class="login-text">Se abrió una ventana adentro de la app. Ingresá usuario y contraseña — la próxima vez entra solo.</p>
+          <p class="login-text" id="loginText">Se abrió una ventana adentro de la app. Ingresá usuario y contraseña.</p>
           <p class="login-meta">Tomate el tiempo que necesites · el envío está pausado.</p>
-          <button class="ghost-btn" id="openLoginBtn">Si no se abrió, abrir en mi navegador</button>
+          <div class="login-nudge hidden" id="loginNudge">
+            💡 ¿Cansado de loguearte? Guardá tus credenciales una vez y la app entra sola.
+            <button class="ghost-btn ghost-btn-small" id="loginSaveCredsBtn">Guardar credenciales miBA</button>
+          </div>
+          <button class="ghost-btn ghost-btn-small" id="openLoginBtn">Si no se abrió, abrir en mi navegador</button>
         </section>
 
         <!-- Live chat with Boti — the centerpiece during submission -->
@@ -332,7 +336,28 @@
             <span class="primary-action-label">Guardar</span>
           </button>
         </div>
-        <p class="settings-foot">🔒 Encriptado con la clave del sistema operativo. Nunca se guarda en texto plano ni se sube a ningún lado.</p>
+
+        <hr class="settings-sep">
+
+        <div class="card-eyebrow">OCR online (opcional)</div>
+        <p class="settings-intro" style="margin-bottom:12px">
+          Si la lectura local de patente falla (fotos lejanas), la app usa
+          <strong>Plate Recognizer</strong> como respaldo. Token gratis (2500/mes) en
+          <span class="settings-link">platerecognizer.com</span>.
+        </p>
+        <div class="settings-field">
+          <label for="plateToken">Plate Recognizer API token</label>
+          <input type="password" id="plateToken" autocomplete="off" spellcheck="false" placeholder="40 caracteres hex">
+        </div>
+        <div class="settings-status" id="plateStatus"></div>
+        <div class="settings-actions">
+          <button class="ghost-btn" id="plateClearBtn">Borrar token</button>
+          <button class="primary-action primary-action-compact" id="plateSaveBtn">
+            <span class="primary-action-label">Guardar token</span>
+          </button>
+        </div>
+
+        <p class="settings-foot">🔒 Todo encriptado con la clave del sistema operativo. Nunca en texto plano, nunca se sube.</p>
       </div>
     </div>
 

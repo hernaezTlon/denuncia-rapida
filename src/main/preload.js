@@ -54,6 +54,11 @@ contextBridge.exposeInMainWorld('api', {
   mibaHasCredentials: () => ipcRenderer.invoke('miba-has-credentials'),
   mibaClearCredentials: () => ipcRenderer.invoke('miba-clear-credentials'),
 
+  // Plate Recognizer token (online OCR fallback)
+  plateSaveToken: (token) => ipcRenderer.invoke('plate-save-token', token),
+  plateHasToken: () => ipcRenderer.invoke('plate-has-token'),
+  plateClearToken: () => ipcRenderer.invoke('plate-clear-token'),
+
   // Utilities
   openExternal: (url) => ipcRenderer.invoke('open-external', url)
 });

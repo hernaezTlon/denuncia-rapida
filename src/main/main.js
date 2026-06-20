@@ -49,6 +49,12 @@ app.whenReady().then(() => {
     try { app.dock.setIcon(APP_ICON); } catch (_) { /* ignore */ }
   }
 
+  // Apply a stored Plate Recognizer token so the online OCR fallback is active
+  try {
+    const token = mibaCredentials.getPlateToken();
+    if (token) aiAssistant.setPlateRecognizerToken(token);
+  } catch (_) { /* ignore */ }
+
   createWindow();
 
   app.on('activate', () => {
@@ -324,6 +330,31 @@ ipcMain.handle('miba-has-credentials', async () => {
 ipcMain.handle('miba-clear-credentials', async () => {
   try {
     const cleared = mibaCredentials.clearMibaCredentials();
+    return { success: true, cleared };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Plate Recognizer token (online ALPR fallback) — stored encrypted, applied to aiAssistant
+ipcMain.handle('plate-save-token', async (event, token) => {
+  try {
+    mibaCredentials.savePlateToken(token);
+    aiAssistant.setPlateRecognizerToken(token);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('plate-has-token', async () => {
+  return { has: mibaCredentials.hasPlateToken(), available: mibaCredentials.isAvailable() };
+});
+
+ipcMain.handle('plate-clear-token', async () => {
+  try {
+    const cleared = mibaCredentials.clearPlateToken();
+    aiAssistant.setPlateRecognizerToken(null);
     return { success: true, cleared };
   } catch (error) {
     return { success: false, error: error.message };

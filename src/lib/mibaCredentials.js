@@ -10,6 +10,10 @@ function credsPath() {
   return path.join(app.getPath('userData'), 'miba-creds.enc');
 }
 
+function plateTokenPath() {
+  return path.join(app.getPath('userData'), 'plate-token.enc');
+}
+
 function isAvailable() {
   try {
     return safeStorage.isEncryptionAvailable();
@@ -60,10 +64,42 @@ function clearMibaCredentials() {
   return false;
 }
 
+// --- Plate Recognizer token (online ALPR fallback) — same safeStorage encryption ---
+function savePlateToken(token) {
+  if (!isAvailable()) throw new Error('El almacenamiento seguro no está disponible en este sistema.');
+  if (!token) throw new Error('El token es obligatorio.');
+  fs.writeFileSync(plateTokenPath(), safeStorage.encryptString(String(token).trim()));
+  return true;
+}
+
+function getPlateToken() {
+  const p = plateTokenPath();
+  if (!fs.existsSync(p) || !isAvailable()) return null;
+  try {
+    return safeStorage.decryptString(fs.readFileSync(p)) || null;
+  } catch {
+    return null;
+  }
+}
+
+function hasPlateToken() {
+  return fs.existsSync(plateTokenPath());
+}
+
+function clearPlateToken() {
+  const p = plateTokenPath();
+  if (fs.existsSync(p)) { fs.unlinkSync(p); return true; }
+  return false;
+}
+
 module.exports = {
   isAvailable,
   saveMibaCredentials,
   getMibaCredentials,
   hasMibaCredentials,
-  clearMibaCredentials
+  clearMibaCredentials,
+  savePlateToken,
+  getPlateToken,
+  hasPlateToken,
+  clearPlateToken
 };

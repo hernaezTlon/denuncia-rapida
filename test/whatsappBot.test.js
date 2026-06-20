@@ -9,6 +9,7 @@ function createTestBot(state, reportOverrides = {}) {
   const sentPhotos = [];
 
   bot.state = state;
+  bot.settleMs = 0; // process bursts synchronously in tests (no debounce wait)
   bot.currentReport = {
     address: 'AV RIVADAVIA [AGREGAR NÚMERO]',
     date: '31/01/2026',
@@ -179,6 +180,44 @@ test('WAITING_CONFIRM_START extracts botm.cc login URL with multi-segment path',
 
   assert.equal(loginEvents.length, 1);
   assert.equal(loginEvents[0], 'https://botm.cc/l/3brzWR5', 'must capture the FULL path, not truncate at /l');
+});
+
+test('burst processing responds once to the menu, ignoring preceding filler', async () => {
+  const { bot, sentMessages } = createTestBot(STATES.WAITING_MENU);
+  // Simulate Boti's burst: filler lines, then the actual menu last
+  bot._burst = [
+    'Dale, ahora seguimos por acá.',
+    '☝️ Un aviso sin opciones.',
+    'Elegí una opción:\nA. Auto mal estacionado\nB. Otra cosa'
+  ];
+  await bot._drainBurst();
+  assert.equal(sentMessages.length, 1, 'should respond exactly once to the whole burst');
+  assert.equal(sentMessages[0], 'A');
+  assert.equal(bot.state, STATES.WAITING_SUBCATEGORY);
+});
+
+test('burst with a state transition + next prompt handles both (login → email confirm)', async () => {
+  const { bot, sentMessages } = createTestBot(STATES.WAITING_LOGIN);
+  // Boti sends login-success AND the email-confirm menu in one burst
+  bot._burst = [
+    'Listo Damián Alberto Hernaez ya estás en miBA. ✅',
+    'Este es el mail al que te vamos a contactar: dhernaez@gmail.com',
+    'Si es el correcto, podemos seguir.\n\nA. Está bien\nB. Cambiar mail'
+  ];
+  await bot._drainBurst();
+  assert.equal(sentMessages.length, 1, 'must answer the email confirm even though login transition was first');
+  assert.equal(sentMessages[0], 'A');
+  assert.equal(bot.state, STATES.WAITING_ADDRESS_INPUT);
+});
+
+test('burst with no actionable message schedules AI once, not per-message', async () => {
+  const { bot, sentMessages } = createTestBot(STATES.WAITING_MENU);
+  let aiCalls = 0;
+  bot.scheduleAiDisambiguation = () => { aiCalls++; };
+  bot._burst = ['filler uno', 'filler dos', 'filler tres'];
+  await bot._drainBurst();
+  assert.equal(sentMessages.length, 0);
+  assert.equal(aiCalls, 1, 'AI scheduled once for the whole burst, not 3x');
 });
 
 test('WAITING_PLATE_PHOTO sends our OCR plate (not Boti wrong one) when asked for plate by text', async () => {

@@ -826,6 +826,16 @@ body::after {
 /* ============ CHAT ============ */
 .chat-card { display: flex; flex-direction: column; min-height: 480px; }
 
+/* Flash the chat card when a report kicks off, to draw the eye to the live conversation */
+.chat-card.chat-flash {
+  animation: chat-flash 1.1s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes chat-flash {
+  0%   { box-shadow: var(--shadow-mid), 0 0 0 0 rgba(246, 201, 71, 0); }
+  25%  { box-shadow: var(--shadow-mid), 0 0 0 2px rgba(246, 201, 71, 0.6), 0 0 32px rgba(246, 201, 71, 0.3); }
+  100% { box-shadow: var(--shadow-mid), 0 0 0 0 rgba(246, 201, 71, 0); }
+}
+
 .chat-head {
   display: flex;
   justify-content: space-between;
@@ -969,6 +979,17 @@ body::after {
   color: var(--text-secondary);
   margin-bottom: 16px;
 }
+.login-nudge {
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  background: rgba(246, 201, 71, 0.07);
+  border: 1px solid rgba(246, 201, 71, 0.25);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+.login-nudge .ghost-btn { margin-top: 10px; }
 
 .ghost-btn {
   display: inline-flex;
@@ -1247,6 +1268,12 @@ body::after {
   line-height: 1.5;
   color: var(--text-dim);
 }
+.settings-sep {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 22px 0 18px;
+}
+.settings-link { color: var(--civic); }
 
 /* ============ HISTORY PANEL ============ */
 .history-panel {

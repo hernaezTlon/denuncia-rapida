@@ -48,6 +48,9 @@ const el = {
   qrCard: $('qrCard'),
   qrCode: $('qrCode'),
   loginCard: $('loginCard'),
+  loginText: $('loginText'),
+  loginNudge: $('loginNudge'),
+  loginSaveCredsBtn: $('loginSaveCredsBtn'),
   openLoginBtn: $('openLoginBtn'),
 
   // Chat
@@ -85,6 +88,10 @@ const el = {
   mibaSaveBtn: $('mibaSaveBtn'),
   mibaClearBtn: $('mibaClearBtn'),
   settingsStatus: $('settingsStatus'),
+  plateToken: $('plateToken'),
+  plateSaveBtn: $('plateSaveBtn'),
+  plateClearBtn: $('plateClearBtn'),
+  plateStatus: $('plateStatus'),
 
   // Log
   logToggle: $('logToggle'),
@@ -101,6 +108,7 @@ const state = {
   isSubmitting: false,
   detectedPlate: null,
   plateCropPath: null,
+  _detectedPlateSlot: null,
   currentStep: 1,
   countdownInterval: null
 };
@@ -228,18 +236,21 @@ async function processPhoto(filePath, photoType) {
 
   const isFirstPhoto = !state.contextPhoto && !state.platePhoto;
   const photoResultPromise = window.api.processPhoto(filePath);
+  // Scene classification only needs the first photo (it's about the context, not the plate)
   const aiClassifyPromise = isFirstPhoto
     ? window.api.aiClassifyViolation(filePath).catch(() => null)
     : Promise.resolve(null);
 
-  if (isFirstPhoto) {
+  // OCR runs on EVERY photo — the plate is often in the close-up (2nd slot), sometimes not
+  // in the first. We keep the most confident read across both (see updatePlateDisplay merge).
+  if (state.detectedPlate == null) {
     el.plateHero.setAttribute('data-state', 'empty');
     el.plateValue.textContent = 'Detectando…';
     el.plateMeta.textContent = 'la IA local está leyendo la foto';
-    window.api.aiOcrPlate(filePath)
-      .then((r) => updatePlateDisplay(r))
-      .catch(() => updatePlateDisplay(null));
   }
+  window.api.aiOcrPlate(filePath)
+    .then((r) => updatePlateDisplay(r, photoType))
+    .catch(() => updatePlateDisplay(null, photoType));
 
   let result, aiResult;
   try {
@@ -334,28 +345,47 @@ function updateSubmitReady() {
 }
 
 // ============ Plate hero + AI description ============
-function updatePlateDisplay(ocrResult) {
-  if (ocrResult?.success && ocrResult.result) {
-    const r = ocrResult.result;
-    state.detectedPlate = r;
-    state.plateCropPath = r.cropPath || null;
-    el.plateHero.setAttribute('data-state', 'detected');
-    el.plateValue.textContent = r.plate;
-    const fmtLabel = {
-      'new-moto': 'moto · formato nuevo',
-      'new-car': 'auto · formato nuevo',
-      'old-car': 'auto · formato viejo',
-      'old-moto': 'moto · formato viejo'
-    }[r.format] || (r.vehicle || 'vehículo');
-    el.plateMeta.textContent = `${fmtLabel} · confianza ${r.confidence}`;
-    addLog(`🤖 Patente IA: ${r.plate} (${r.confidence}, ${r.format})`);
-  } else {
-    state.detectedPlate = null;
-    state.plateCropPath = null;
+const CONFIDENCE_RANK = { alta: 3, media: 2, baja: 1 };
+function plateScore(r, photoType) {
+  if (!r) return 0;
+  // Base on confidence; nudge the plate-slot close-up slightly higher at ties.
+  return (CONFIDENCE_RANK[r.confidence] || 1) * 10 + (photoType === 'plate' ? 1 : 0);
+}
+
+// Called once per photo's OCR. Keeps the BEST read across both slots.
+function updatePlateDisplay(ocrResult, photoType = 'context') {
+  const incoming = (ocrResult?.success && ocrResult.result) ? ocrResult.result : null;
+
+  if (incoming) {
+    const newScore = plateScore(incoming, photoType);
+    const curScore = plateScore(state.detectedPlate, state._detectedPlateSlot);
+    // Only replace if this read is better (or we had nothing)
+    if (!state.detectedPlate || newScore > curScore) {
+      state.detectedPlate = incoming;
+      state.plateCropPath = incoming.cropPath || null;
+      state._detectedPlateSlot = photoType;
+      el.plateHero.setAttribute('data-state', 'detected');
+      el.plateValue.textContent = incoming.plate;
+      const fmtLabel = {
+        'new-moto': 'moto · formato nuevo',
+        'new-car': 'auto · formato nuevo',
+        'old-car': 'auto · formato viejo',
+        'old-moto': 'moto · formato viejo'
+      }[incoming.format] || (incoming.vehicle || 'vehículo');
+      el.plateMeta.textContent = `${fmtLabel} · confianza ${incoming.confidence} · de foto ${photoType === 'plate' ? 'patente' : 'principal'}`;
+      addLog(`🤖 Patente IA (${photoType}): ${incoming.plate} (${incoming.confidence}, ${incoming.format})`);
+    } else {
+      addLog(`🤖 OCR ${photoType}: ${incoming.plate} (${incoming.confidence}) — descartado, ya hay una lectura mejor`);
+    }
+    return;
+  }
+
+  // No read from this photo — only show "missing" if we still have nothing overall
+  if (!state.detectedPlate) {
     el.plateHero.setAttribute('data-state', 'missing');
     el.plateValue.textContent = 'sin lectura';
     el.plateMeta.textContent = 'Boti hará su OCR · si la patente no se ve bien, cambiá la foto';
-    addLog('⚠ IA no pudo leer la patente — Boti igual va a intentar', 'error');
+    addLog(`⚠ IA no leyó patente en foto ${photoType} — Boti igual va a intentar`, 'error');
   }
 }
 
@@ -490,11 +520,23 @@ function setupWhatsApp() {
     setStatus(el.statusWhatsapp, el.statusWhatsappValue, 'error', 'auth fallida');
   });
 
-  window.api.onWhatsAppLoginRequired((url) => {
+  window.api.onWhatsAppLoginRequired(async (url) => {
     addLog('Login miBA requerido');
     el.loginCard.classList.remove('hidden');
     setStatus(el.statusMiba, el.statusMibaValue, 'connecting', 'iniciando sesión');
     el.openLoginBtn.onclick = () => window.api.openExternal(url);
+
+    // If creds are saved, the app auto-fills; otherwise nudge the user to save them.
+    let has = false;
+    try { ({ has } = await window.api.mibaHasCredentials()); } catch { /* ignore */ }
+    if (has) {
+      el.loginText.textContent = 'Entrando automáticamente con tus credenciales guardadas…';
+      el.loginNudge.classList.add('hidden');
+    } else {
+      el.loginText.textContent = 'Se abrió una ventana adentro de la app. Ingresá usuario y contraseña.';
+      el.loginNudge.classList.remove('hidden');
+      el.loginSaveCredsBtn.onclick = () => el.settingsModal.classList.remove('hidden');
+    }
   });
 
   window.api.onWhatsAppDisconnected((reason) => {
@@ -545,6 +587,15 @@ async function submitReport() {
   updateSubmitReady();
   setStep(3);
   addLog('Iniciando envío…');
+
+  // Bring attention to the live conversation: clear the empty state, scroll it into
+  // view, and pulse the chat card so the user knows where the action is now.
+  const chatEmpty = el.chatMessages.querySelector('.chat-empty');
+  if (chatEmpty) chatEmpty.remove();
+  el.chatSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  el.chatSection.classList.remove('chat-flash');
+  void el.chatSection.offsetWidth; // restart the animation
+  el.chatSection.classList.add('chat-flash');
 
   try {
     const result = await window.api.submitReport(reportData);
@@ -630,6 +681,7 @@ function resetAll() {
   state.gps = null;
   state.detectedPlate = null;
   state.plateCropPath = null;
+  state._detectedPlateSlot = null;
   state.isSubmitting = false;
 
   el.resultSuccess.classList.add('hidden');
@@ -748,6 +800,13 @@ function setupSettings() {
     } else {
       setSettingsStatus('Sin credenciales guardadas todavía.', 'info');
     }
+    // Plate Recognizer token status
+    try {
+      const pt = await window.api.plateHasToken();
+      el.plateStatus.textContent = pt.has ? '✓ Token guardado — OCR online activo.' : 'Sin token (opcional).';
+      el.plateStatus.className = `settings-status ${pt.has ? 'ok' : 'info'}`;
+      if (pt.has) el.plateToken.placeholder = '•••••••• (guardado)';
+    } catch { /* ignore */ }
   });
 
   el.settingsClose.addEventListener('click', () => {
@@ -782,6 +841,21 @@ function setupSettings() {
     } else {
       setSettingsStatus(`✗ ${result.error}`, 'err');
     }
+  });
+
+  // Plate Recognizer token
+  const setPlateStatus = (t, k = 'info') => { el.plateStatus.textContent = t; el.plateStatus.className = `settings-status ${k}`; };
+  el.plateSaveBtn.addEventListener('click', async () => {
+    const token = el.plateToken.value.trim();
+    if (!token) { setPlateStatus('✗ Pegá el token.', 'err'); return; }
+    const r = await window.api.plateSaveToken(token);
+    if (r.success) { setPlateStatus('✓ Token guardado. El OCR online queda activo como respaldo.', 'ok'); el.plateToken.value = ''; }
+    else setPlateStatus(`✗ ${r.error}`, 'err');
+  });
+  el.plateClearBtn.addEventListener('click', async () => {
+    const r = await window.api.plateClearToken();
+    if (r.success) setPlateStatus(r.cleared ? '✓ Token borrado.' : 'No había token.', 'info');
+    else setPlateStatus(`✗ ${r.error}`, 'err');
   });
 }
 

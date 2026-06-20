@@ -14,6 +14,7 @@ function createTranscriptBot(reportData) {
   const sentPhotos = [];
 
   bot.state = STATES.WAITING_MENU;
+  bot.settleMs = 0; // process bursts synchronously in tests (no debounce wait)
   bot.currentReport = {
     ...reportData,
     startedAt: new Date(),
