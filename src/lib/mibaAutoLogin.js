@@ -1,20 +1,17 @@
 const { BrowserWindow } = require('electron');
 
-// Builds the in-page auto-fill script. Runs in the miBA login page context.
-// Conservative: bails unless it finds a password field; fills with native setters
-// so React/Angular forms register the change; submits exactly once.
+// Builds the in-page auto-fill script for miBA's Keycloak login
+// (login.buenosaires.gob.ar, realm "mail"). Verified field IDs:
+//   user: #email (CUIL or email)   pass: #password-text-field   submit: #login
+// NEVER click #kc-decline ("Creá una nueva") or name="create". Generic selectors are
+// kept as fallbacks for theme changes, but the miBA-specific ones come first.
 function buildFillScript(username, password) {
   return `(function() {
     try {
-      var pass = document.querySelector('input[type="password"]');
-      if (!pass) return 'no-password-field';
-      var user = document.querySelector(
-        'input[type="email"], input[name="username"], input[name="usuario"], ' +
-        'input[name="cuil"], input[name="user"], input[name="documento"], ' +
-        'input[id*="user" i], input[id*="cuil" i], input[id*="usuario" i], ' +
-        'input[type="text"]:not([readonly]):not([type="hidden"])'
-      );
-      if (!user) return 'no-user-field';
+      var user = document.querySelector('#email, input[name="email"]')
+              || document.querySelector('input[type="email"], input[name="username"], input[name="usuario"], input[name="cuil"], input[id*="user" i], input[id*="cuil" i], input[type="text"]:not([readonly]):not([type="hidden"])');
+      var pass = document.querySelector('#password-text-field, input[name="password"], input[type="password"]');
+      if (!user || !pass) return 'fields-missing user=' + !!user + ' pass=' + !!pass;
       function setVal(elm, val) {
         var proto = Object.getPrototypeOf(elm);
         var desc = Object.getOwnPropertyDescriptor(proto, 'value');
@@ -24,12 +21,10 @@ function buildFillScript(username, password) {
       }
       setVal(user, ${JSON.stringify(username)});
       setVal(pass, ${JSON.stringify(password)});
-      var btn = document.querySelector('button[type="submit"], input[type="submit"]')
-              || (pass.form && pass.form.querySelector('button'))
-              || document.querySelector('button');
+      var btn = document.querySelector('#login')
+              || (pass.form && pass.form.querySelector('button[type="submit"], input[type="submit"]'));
       if (btn) { btn.click(); return 'submitted'; }
       if (pass.form && pass.form.requestSubmit) { pass.form.requestSubmit(); return 'submitted-form'; }
-      if (pass.form) { pass.form.submit(); return 'submitted-form-legacy'; }
       return 'filled-no-submit';
     } catch (e) { return 'error: ' + e.message; }
   })();`;
@@ -69,13 +64,15 @@ class MiBAAutoLogin {
       }
     });
 
+    // Give the Keycloak page a beat to render before filling, and retry on each
+    // navigation until we actually submit (the form may not be ready on first event).
     const onPageSettled = (url) => {
       console.log('[miBA window] at:', url);
-      this._maybeAutofill();
+      setTimeout(() => this._maybeAutofill(), 1200);
     };
     this.window.webContents.on('did-navigate', (_e, url) => onPageSettled(url));
     this.window.webContents.on('did-navigate-in-page', (_e, url) => onPageSettled(url));
-    this.window.webContents.on('did-finish-load', () => this._maybeAutofill());
+    this.window.webContents.on('did-finish-load', () => setTimeout(() => this._maybeAutofill(), 1200));
     this.window.webContents.on('did-fail-load', (_e, code, desc, url) => {
       console.log('[miBA window] failed to load:', url, code, desc);
     });
@@ -92,18 +89,14 @@ class MiBAAutoLogin {
   async _maybeAutofill() {
     if (!this.credentials || this.attempted || !this.window) return;
     const wc = this.window.webContents;
-    let hasPassword = false;
-    try {
-      hasPassword = await wc.executeJavaScript(`!!document.querySelector('input[type="password"]')`);
-    } catch { return; }
-    if (!hasPassword) return; // not on the login form yet — wait for next navigation
-
-    this.attempted = true; // one shot — never loop (avoids account lockout)
     try {
       const result = await wc.executeJavaScript(
         buildFillScript(this.credentials.username, this.credentials.password)
       );
       console.log('[miBA autofill]', result);
+      // Only stop once we've actually submitted — otherwise retry on the next event
+      // (the form might not have rendered yet). 'fields-missing' = wait and retry.
+      if (result === 'submitted' || result === 'submitted-form') this.attempted = true;
     } catch (e) {
       console.log('[miBA autofill] error:', e.message);
     }
