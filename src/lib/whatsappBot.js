@@ -347,7 +347,11 @@ class WhatsAppBot extends EventEmitter {
         } else if (this.reconnectAttempts < this.maxReconnectAttempts) {
           // Temporary disconnect — reconnect with backoff
           this.reconnectAttempts++;
-          const delay = Math.min(1000 * this.reconnectAttempts, 5000);
+          // 428 = WhatsApp throttling our stream: rapid retries make it worse.
+          // Space those out hard; other transient codes keep the quick retry.
+          const delay = statusCode === 428
+            ? 20000 * this.reconnectAttempts
+            : Math.min(1000 * this.reconnectAttempts, 5000);
           console.log(`Reconnecting (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay}ms...`);
           setTimeout(() => this.initialize(), delay);
         } else {
