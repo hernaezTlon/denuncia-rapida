@@ -32,7 +32,14 @@ function arg(flag) {
     () => {}
   );
 
-  bot.on('qr', () => console.log('⚠ QR requerido — abrí la app una vez para vincular WhatsApp.'));
+  bot.on('qr', async (qr) => {
+    const QR = require('qrcode');
+    const pngPath = require('path').join(require('os').homedir(), 'Desktop', 'denuncia-QR.png');
+    try {
+      await QR.toFile(pngPath, qr, { width: 600, margin: 2 });
+      console.log(`\nQR_READY ${pngPath}`);
+    } catch (e) { console.log('QR error:', e.message); }
+  });
   bot.on('message', (m) => {
     const tag = m.from === 'bot' ? '←' : m.from === 'app' ? '→' : '·';
     console.log(`${tag} ${String(m.text).replace(/\n/g, ' ').slice(0, 110)}`);

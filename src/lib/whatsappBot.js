@@ -276,24 +276,38 @@ class WhatsAppBot extends EventEmitter {
 
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
-    // Fetch the WhatsApp Web version Baileys is compatible with right now.
-    // Without this, Baileys uses a hardcoded version that WA rejects when WA bumps the protocol.
+    // Connection "flavor" ladder. WA rotates which client fingerprints it accepts:
+    //  - 'plain'  = Baileys' baked-in version + Ubuntu/Chrome identity (works 2026-06)
+    //  - 'pinned' = fetchLatestBaileysVersion() + macOS Desktop (fixed the 408s of 2026-05,
+    //               but started being rejected with 428 loops on 2026-06-20)
+    // We start with the currently-proven flavor and flip on fingerprint-style failures
+    // (428 on 'pinned', 405/408 on 'plain') — see the close handler.
+    if (!this._connFlavor) this._connFlavor = 'plain';
     let waVersion;
-    try {
-      const versionResult = await fetchLatestBaileysVersion();
-      waVersion = versionResult.version;
-      console.log('Using WhatsApp version:', waVersion.join('.'));
-    } catch (err) {
-      console.warn('Could not fetch latest WA version, using Baileys default:', err.message);
+    let browserId = Browsers.ubuntu('Chrome');
+    if (this._connFlavor === 'pinned') {
+      try {
+        const versionResult = await fetchLatestBaileysVersion();
+        waVersion = versionResult.version;
+        browserId = Browsers.macOS('Desktop');
+      } catch (err) {
+        console.warn('Could not fetch latest WA version, using Baileys default:', err.message);
+      }
     }
+    console.log(`WA connect flavor: ${this._connFlavor}${waVersion ? ' (' + waVersion.join('.') + ')' : ''}`);
 
-    this.sock = makeWASocket({
-      version: waVersion,
-      browser: Browsers.macOS('Desktop'),
+    // Only set `version` when we actually have one. Passing `version: undefined`
+    // makes Baileys resolve an empty version and the server closes the stream
+    // pre-handshake (status: undefined, no QR) — omitting the key lets Baileys use
+    // its bundled default, which is what the working plain-Node probe does.
+    const sockConfig = {
+      browser: browserId,
       auth: state,
       printQRInTerminal: false,
       logger: pino({ level: 'silent' })
-    });
+    };
+    if (waVersion) sockConfig.version = waVersion;
+    this.sock = makeWASocket(sockConfig);
 
     // Save credentials whenever they update
     this.sock.ev.on('creds.update', saveCreds);
@@ -304,11 +318,17 @@ class WhatsAppBot extends EventEmitter {
 
       if (qr) {
         console.log('QR Code received');
+        // A QR means the connection works — it's just unscanned. Reset the reconnect
+        // counter so QR timeouts (status 408) refresh the code forever instead of
+        // burning through maxReconnectAttempts while waiting for the user to scan.
+        this.reconnectAttempts = 0;
+        this._awaitingScan = true;
         this.emit('qr', qr);
       }
 
       if (connection === 'open') {
         console.log('WhatsApp client is ready!');
+        this._awaitingScan = false;
         this.isReady = true;
         this.reconnectAttempts = 0;
         this.emit('ready');
@@ -347,13 +367,24 @@ class WhatsAppBot extends EventEmitter {
         } else if (this.reconnectAttempts < this.maxReconnectAttempts) {
           // Temporary disconnect — reconnect with backoff
           this.reconnectAttempts++;
-          // 428 = WhatsApp throttling our stream: rapid retries make it worse.
-          // Space those out hard; other transient codes keep the quick retry.
-          const delay = statusCode === 428
-            ? 20000 * this.reconnectAttempts
-            : Math.min(1000 * this.reconnectAttempts, 5000);
+          // 428 = WA rejecting our client fingerprint (or throttling). Flip the
+          // connection flavor (pinned-version/macOS ↔ default-version/Ubuntu) and
+          // give it breathing room — verified 2026-06-20: 'pinned' 428-looped
+          // while 'plain' got a QR instantly.
+          let delay = Math.min(1000 * this.reconnectAttempts, 5000);
+          if (statusCode === 428) {
+            this._connFlavor = this._connFlavor === 'plain' ? 'pinned' : 'plain';
+            console.log(`428 → flipping connect flavor to '${this._connFlavor}'`);
+            delay = 8000 * this.reconnectAttempts;
+          }
           console.log(`Reconnecting (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay}ms...`);
           setTimeout(() => this.initialize(), delay);
+        } else if (this._awaitingScan) {
+          // Still waiting for the user to scan the QR — keep the pairing alive
+          // indefinitely (each timeout just yields a fresh QR).
+          this.reconnectAttempts = 0;
+          console.log('QR aún sin escanear — reintentando pairing...');
+          setTimeout(() => this.initialize(), 3000);
         } else {
           console.log('Max reconnect attempts reached');
           this.emit('auth-failure', 'No se pudo conectar después de varios intentos');
