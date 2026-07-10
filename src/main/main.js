@@ -10,8 +10,12 @@ const aiAssistant = require('../lib/aiAssistant');
 const reportHistory = require('../lib/reportHistory');
 const { MiBAAutoLogin, isLoginSuccessMessage } = require('../lib/mibaAutoLogin');
 const mibaCredentials = require('../lib/mibaCredentials');
+const { InboxWatcher } = require('../lib/inboxWatcher');
+const photoProcessor = require('../lib/photoProcessor');
+const transcribe = require('../lib/transcribe');
 
 const mibaLogin = new MiBAAutoLogin();
+let inboxWatcher = null;
 
 let mainWindow;
 let whatsappBot = null;
@@ -134,6 +138,41 @@ ipcMain.handle('whatsapp-init', async () => {
 
       whatsappBot.on('ready', () => {
         mainWindow.webContents.send('whatsapp-ready');
+        // Hands-off phone flow: watch the user's "Message Yourself" chat for photos.
+        // Re-attach on every ready (the socket is replaced on reconnect).
+        if (!inboxWatcher) {
+          inboxWatcher = new InboxWatcher(
+            whatsappBot,
+            { aiAssistant, photoProcessor, reportValidation: { validateReportData }, reportHistory, transcribe },
+            (text) => {
+              try { mainWindow.webContents.send('whatsapp-message', { from: 'system', text: `📲 ${text}` }); } catch (_) { /* window gone */ }
+            }
+          );
+        }
+        inboxWatcher.attach();
+
+        // Dev-only self-test: SELF_TEST_PHOTO=/path npm run dev injects a photo (+ caption
+        // + address) into the self-chat via our own socket — same inbound path a phone
+        // share takes. Lets the phone flow be verified end-to-end without a phone.
+        if (process.env.SELF_TEST_PHOTO && !global.__selfTestSent) {
+          global.__selfTestSent = true;
+          setTimeout(async () => {
+            try {
+              const fs2 = require('fs');
+              const jid = [...inboxWatcher.selfJids][0];
+              console.log('[self-test] enviando foto al chat propio…');
+              await whatsappBot.sock.sendMessage(jid, {
+                image: fs2.readFileSync(process.env.SELF_TEST_PHOTO),
+                caption: process.env.SELF_TEST_CAPTION || ''
+              });
+              if (process.env.SELF_TEST_ADDRESS) {
+                await new Promise((r) => setTimeout(r, 4000));
+                console.log('[self-test] enviando dirección…');
+                await whatsappBot.sock.sendMessage(jid, { text: process.env.SELF_TEST_ADDRESS });
+              }
+            } catch (e) { console.error('[self-test] error:', e.message); }
+          }, 3000);
+        }
       });
 
       whatsappBot.on('message', (message) => {

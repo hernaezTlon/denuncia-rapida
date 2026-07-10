@@ -261,6 +261,7 @@ class WhatsAppBot extends EventEmitter {
 
     // Dynamic imports for ESM-only packages
     const baileys = await import('baileys');
+    this.baileysLib = baileys; // exposed for inboxWatcher (downloadMediaMessage, jidNormalizedUser)
     const { default: pino } = await import('pino');
     const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = baileys;
 

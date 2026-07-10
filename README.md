@@ -71,6 +71,22 @@ Listo. A partir de acá: **arrastrás una foto y la app hace el resto.**
 
 ---
 
+## 📱 Desde el celular (cero clics en la compu)
+
+Con la app corriendo en tu Mac, usá el chat **"Mensaje para mí"** de WhatsApp como control remoto:
+
+1. Sacá la foto del vehículo y **compartila a tu propio chat** de WhatsApp.
+2. Opcional, en el mismo chat:
+   - **Ubicación** 📍 → se convierte en la dirección automáticamente.
+   - **Texto** → si parece dirección ("Libertador y Olleros") la usa como dirección; si no, como descripción.
+   - **Audio** 🎙 → se transcribe si tenés `whisper-cpp` instalado (`brew install whisper-cpp`).
+   - **Caption** en la foto → mismo ruteo que el texto.
+3. La app lee la patente (IA local + respaldo online), clasifica la infracción, entra a miBA sola y habla con Boti.
+4. **Te responde en el mismo chat con el número de trámite.** ✅
+
+Si falta la dirección, te la pide por el chat — un solo mensaje y sigue sola.
+También hay un daemon sin UI: `node scripts/inbox-daemon.js`.
+
 ## 🧭 Cómo usarla
 
 1. Arrastrá la foto a la zona grande (o click para elegir). Con una sola foto alcanza.
