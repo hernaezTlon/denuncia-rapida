@@ -87,6 +87,25 @@ Con la app corriendo en tu Mac, usá el chat **"Mensaje para mí"** de WhatsApp 
 Si falta la dirección, te la pide por el chat — un solo mensaje y sigue sola.
 También hay un daemon sin UI: `node scripts/inbox-daemon.js`.
 
+### La receta de cero interacciones extra
+
+WhatsApp **borra el GPS** de las fotos enviadas como imagen. Si la mandás como **documento**, el GPS y la fecha sobreviven y no te pregunta nada:
+
+> Compartir → WhatsApp → tu chat → clip 📎 → **Documento** → elegir la foto.
+
+Con eso la app resuelve **dirección, fecha y hora reales de la foto** sola (usa la fecha EXIF, no el momento del envío — podés mandar la foto horas después). Si la mandás como imagen normal, solo te va a pedir la ubicación: un toque en 📍 y sigue.
+
+### Siempre encendida (auto-arranque)
+
+Para que el flujo del celular funcione sin abrir nada en la Mac:
+
+```bash
+npm run install-autostart
+```
+
+Crea un LaunchAgent: la app arranca sola al iniciar sesión y se relanza si se cierra. La Mac solo tiene que estar despierta. Se quita con `npm run uninstall-autostart`.
+Si la Mac estaba dormida cuando mandaste la foto, la denuncia sale sola al despertarse (WhatsApp entrega los mensajes pendientes).
+
 ## 🧭 Cómo usarla
 
 1. Arrastrá la foto a la zona grande (o click para elegir). Con una sola foto alcanza.

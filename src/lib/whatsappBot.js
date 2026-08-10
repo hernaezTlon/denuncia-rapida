@@ -361,9 +361,18 @@ class WhatsAppBot extends EventEmitter {
           } catch (e) {
             console.error('Failed to clear session:', e.message);
           }
+          // A 405 on a fresh session is a fingerprint rejection, not stale auth —
+          // flip the connect flavor before retrying (see the ladder comment above)
+          // and give WA breathing room so we don't trip its throttling (428).
+          let fatalDelay = 2000;
+          if (statusCode === 405) {
+            this._connFlavor = this._connFlavor === 'plain' ? 'pinned' : 'plain';
+            console.log(`405 → flipping connect flavor to '${this._connFlavor}'`);
+            fatalDelay = 15_000;
+          }
           // Reinitialize to show new QR
           console.log('Reinitializing for fresh QR...');
-          setTimeout(() => this.initialize(), 2000);
+          setTimeout(() => this.initialize(), fatalDelay);
         } else if (this.reconnectAttempts < this.maxReconnectAttempts) {
           // Temporary disconnect — reconnect with backoff
           this.reconnectAttempts++;

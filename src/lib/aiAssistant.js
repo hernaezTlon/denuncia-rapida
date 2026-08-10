@@ -360,6 +360,19 @@ async function ocrPlateLocal(photoPath, { fetchImpl = fetch, timeoutMs = 60_000 
       imageBase64 = loadImageBase64(photoPath);
     }
 
+    // Even if the local reader (Ollama) is missing or fails, the YOLOS crop is
+    // valuable on its own: it's what we send Boti as the plate photo.
+    const cropOnly = () => (cropPath ? {
+      plate: null,
+      format: null,
+      confidence: 'baja',
+      vehicle: null,
+      detectionScore,
+      cropPath,
+      source: 'local',
+      reason: 'detector ok, lector no disponible'
+    } : null);
+
     const prompt = `TAREA: Leer una matrícula (patente) argentina.
 
 ${detectionScore ? 'La foto es un PRIMER PLANO de una patente (ya recortada).' : 'La patente aparece en algún lugar de la foto.'}
@@ -380,19 +393,25 @@ Leé carácter por carácter. NO confundas el patrón anti-falsificación de fon
 Respondé SOLO con JSON:
 {"patente": "XXXXXXX", "confianza": "alta|media|baja", "vehiculo": "auto|moto|camion"}`;
 
-    const raw = await ollamaGenerate({
-      prompt,
-      images: [imageBase64],
-      format: 'json',
-      model: OLLAMA_OCR_MODEL,
-      options: { temperature: 0.1 },
-      timeoutMs,
-      fetchImpl
-    });
+    let raw;
+    try {
+      raw = await ollamaGenerate({
+        prompt,
+        images: [imageBase64],
+        format: 'json',
+        model: OLLAMA_OCR_MODEL,
+        options: { temperature: 0.1 },
+        timeoutMs,
+        fetchImpl
+      });
+    } catch (err) {
+      console.warn('Local OCR reader unavailable:', err.message);
+      return cropOnly();
+    }
 
     // Parse — the model may return messy JSON with duplicate keys etc.
     const parsed = parseJsonResponse(raw);
-    if (!parsed) return null;
+    if (!parsed) return cropOnly();
 
     // Try the canonical field first, then fall back to reconstructing from per-char fields
     let plate = parsed.patente || parsed.plate || parsed.patente_completa;
@@ -402,13 +421,13 @@ Respondé SOLO con JSON:
         .filter(Boolean)
         .join('');
     }
-    if (!plate || /^null$/i.test(plate) || /\?/.test(plate)) return null;
+    if (!plate || /^null$/i.test(plate) || /\?/.test(plate)) return cropOnly();
 
     const detected = detectPlateFormat(plate);
     if (!detected) {
       // Doesn't match any known format — better to return null than confidently wrong
       console.warn(`OCR returned "${plate}" but no Argentine plate format matched`);
-      return null;
+      return cropOnly();
     }
 
     return {
@@ -508,6 +527,8 @@ async function ocrPlate(photoPath, opts = {}) {
     const online = await ocrPlateOnline(photoPath, opts);
     if (online && online.plate) {
       console.log(`Online ALPR read: ${online.plate} (${online.confidence})`);
+      // Online ALPR has no crop — inherit the local YOLOS crop for Boti's plate photo
+      if (!online.cropPath && local?.cropPath) online.cropPath = local.cropPath;
       return online;
     }
   }

@@ -354,7 +354,7 @@ function plateScore(r, photoType) {
 
 // Called once per photo's OCR. Keeps the BEST read across both slots.
 function updatePlateDisplay(ocrResult, photoType = 'context') {
-  const incoming = (ocrResult?.success && ocrResult.result) ? ocrResult.result : null;
+  const incoming = (ocrResult?.success && ocrResult.result?.plate) ? ocrResult.result : null;
 
   if (incoming) {
     const newScore = plateScore(incoming, photoType);

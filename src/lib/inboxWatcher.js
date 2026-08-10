@@ -61,6 +61,7 @@ class InboxWatcher {
     this.attachedSock = null;
     this.selfJids = new Set();
     this.sentIds = new Set();
+    this.seenInbound = new Set();   // dedup: reconnects can re-deliver offline messages
     this.pending = null;      // { photoPath, platePhotoPath, address, description, ocr, processing, askedAddress, expiresAt }
     this.firing = false;
   }
@@ -94,6 +95,11 @@ class InboxWatcher {
     const jid = m.key.remoteJid;
     if (!this.selfJids.has(jid)) return;          // only the self-chat
     if (this.sentIds.has(m.key.id)) return;       // one of our own replies
+    if (this.seenInbound.has(m.key.id)) return;   // already processed (re-delivery)
+    this.seenInbound.add(m.key.id);
+    if (this.seenInbound.size > 500) {
+      this.seenInbound = new Set([...this.seenInbound].slice(-250));
+    }
 
     const msg = m.message;
     const text = msg.conversation || msg.extendedTextMessage?.text || '';
@@ -150,6 +156,9 @@ class InboxWatcher {
       address: null,
       description: null,
       ocr: null,
+      date: null,
+      time: null,
+      isRecent: false,
       askedAddress: false,
       expiresAt: Date.now() + PENDING_TTL_MS,
       processing: null
@@ -168,8 +177,9 @@ class InboxWatcher {
       const p = this.pending;
       if (!p || p.photoPath !== photoPath) return;
 
-      if (ocr?.plate) {
-        p.ocr = ocr;
+      if (ocr) {
+        if (ocr.plate) p.ocr = ocr;
+        // The YOLOS crop is useful even without a read: Boti OCRs the close-up
         if (ocr.cropPath) p.platePhotoPath = ocr.cropPath;
       }
       if (!p.description && category) p.description = category;
@@ -179,10 +189,17 @@ class InboxWatcher {
       } else if (!p.address && photoData?.address?.formatted) {
         p.address = photoData.address.formatted; // still better than nothing; Boti may accept
       }
+      // EXIF date survives "as document" too — report the moment of the photo, not of the share
+      if (photoData?.formattedDate) {
+        p.date = photoData.formattedDate;
+        p.time = photoData.formattedTime;
+        p.isRecent = photoProcessor.isRecent(photoData.dateTime);
+      }
 
       const plateLine = ocr?.plate ? `Patente: *${ocr.plate}* (${ocr.confidence})` : 'Patente: no pude leerla (Boti intentará)';
       const descLine = p.description ? `Tipo: ${p.description}` : '';
-      await this._reply([plateLine, descLine].filter(Boolean).join('\n'));
+      const dateLine = p.date ? `Fecha de la foto: ${p.date} ${p.time || ''}`.trim() : '';
+      await this._reply([plateLine, descLine, dateLine].filter(Boolean).join('\n'));
     })();
 
     await this.pending.processing;
@@ -274,13 +291,13 @@ class InboxWatcher {
     const { reportValidation, reportHistory } = this.deps;
     const report = {
       address: p.address,
-      date: todayDDMMYYYY(),
-      time: nowHHMM(),
+      date: p.date || todayDDMMYYYY(),
+      time: p.time || nowHHMM(),
       description: p.description || 'Estacionado en lugar prohibido',
       contextPhotoPath: p.photoPath,
       platePhotoPath: p.platePhotoPath || p.photoPath,
       detectedPlate: p.ocr && p.ocr.confidence !== 'baja' ? p.ocr.plate : null,
-      isRecent: false
+      isRecent: !!p.isRecent
     };
     const v = reportValidation.validateReportData(report);
     Object.assign(report, v.sanitized);

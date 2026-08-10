@@ -23,7 +23,7 @@ rm -rf "$APP_DIR"
 # Create the .app using osacompile
 # AppleScript apps run shell commands with the user's full permissions,
 # avoiding macOS sandbox restrictions that block regular .app bundles
-osacompile -o "$APP_DIR" -e "do shell script \"'$ELECTRON' '$PROJECT_DIR' > /dev/null 2>&1 &\""
+osacompile -o "$APP_DIR" -e "do shell script \"'$ELECTRON' '$PROJECT_DIR' >> \$HOME/Library/Logs/denuncia-rapida.log 2>&1 &\""
 
 # Swap in the custom DR plate icon (replaces the default AppleScript applet icon)
 ICON_SRC="$PROJECT_DIR/build/icon.icns"
