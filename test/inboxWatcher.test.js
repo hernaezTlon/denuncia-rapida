@@ -266,3 +266,11 @@ test('photo without EXIF date: "ahora" means just now', async () => {
   assert.equal(submitted.length, 1);
   assert.equal(submitted[0].isRecent, true);
 });
+
+test('startFromFile runs the same photo pipeline as a WhatsApp document', async () => {
+  const { watcher } = makeFlakyWatcher(0);
+  const seen = [];
+  watcher._onPhotoFile = async (photoPath, imageMsg, isDocument) => { seen.push({ photoPath, isDocument, caption: imageMsg.caption }); };
+  await watcher.startFromFile('/tmp/from-icloud.jpg');
+  assert.deepEqual(seen, [{ photoPath: '/tmp/from-icloud.jpg', isDocument: true, caption: undefined }]);
+});

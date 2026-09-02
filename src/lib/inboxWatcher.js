@@ -178,8 +178,6 @@ class InboxWatcher {
   // ---------- content handlers ----------
 
   async _onImage(m, imageMsg, isDocument) {
-    const { aiAssistant, photoProcessor } = this.deps;
-
     let buffer;
     try {
       buffer = await this.bot.baileysLib.downloadMediaMessage(
@@ -193,7 +191,16 @@ class InboxWatcher {
 
     const photoPath = path.join(os.tmpdir(), `inbox-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.jpg`);
     fs.writeFileSync(photoPath, buffer);
+    return this._onPhotoFile(photoPath, imageMsg, isDocument);
+  }
 
+  // A photo dropped in the watched folder (iCloud Drive/Denuncias): original file, EXIF intact.
+  async startFromFile(photoPath) {
+    return this._onPhotoFile(photoPath, {}, true);
+  }
+
+  async _onPhotoFile(photoPath, imageMsg, isDocument) {
+    const { aiAssistant } = this.deps;
     // Is this a close-up of the vehicle we already have, or another vehicle?
     const current = this.pending;
     if (current && current.photoPath) {

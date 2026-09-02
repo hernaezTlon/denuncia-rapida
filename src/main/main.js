@@ -14,6 +14,7 @@ const { InboxWatcher } = require('../lib/inboxWatcher');
 const photoProcessor = require('../lib/photoProcessor');
 const transcribe = require('../lib/transcribe');
 const ollamaSupervisor = require('../lib/ollamaSupervisor');
+const { FolderWatcher } = require('../lib/folderWatcher');
 
 const mibaLogin = new MiBAAutoLogin();
 let inboxWatcher = null;
@@ -158,6 +159,9 @@ ipcMain.handle('whatsapp-init', async () => {
               try { mainWindow.webContents.send('whatsapp-message', { from: 'system', text: `📲 ${text}` }); } catch (_) { /* window gone */ }
             }
           );
+          // One-tap phone flow: an iOS Shortcut saves the original photo (EXIF intact) to
+          // iCloud Drive/Denuncias; we pick it up here. Replies still go to the self-chat.
+          new FolderWatcher(inboxWatcher, { log: (t) => console.log('[inbox]', t) }).start();
         }
         inboxWatcher.attach();
 

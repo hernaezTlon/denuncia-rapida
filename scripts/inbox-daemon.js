@@ -19,6 +19,7 @@ const reportValidation = require('../src/lib/reportValidation');
 const reportHistory = require('../src/lib/reportHistory');
 const transcribe = require('../src/lib/transcribe');
 const { superviseOllama } = require('../src/lib/ollamaSupervisor');
+const { FolderWatcher } = require('../src/lib/folderWatcher');
 
 function arg(flag) {
   const i = process.argv.indexOf(flag);
@@ -33,6 +34,7 @@ function arg(flag) {
     { aiAssistant, photoProcessor, reportValidation, reportHistory, transcribe },
     () => {}
   );
+  new FolderWatcher(watcher, { log: (t) => console.log('📁', t) }).start();
 
   bot.on('qr', async (qr) => {
     const QR = require('qrcode');

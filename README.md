@@ -103,6 +103,21 @@ WhatsApp **borra el GPS** de las fotos enviadas como imagen. Si la mandás como 
 
 Con eso la app resuelve **dirección, fecha y hora reales de la foto** sola (usa la fecha EXIF, no el momento del envío — podés mandar la foto horas después). La dirección sale del geocoder oficial de la Ciudad (USIG), con altura y los nombres de calle que usa Boti. Si la mandás como imagen normal, solo te va a pedir la ubicación: un toque en 📍 y sigue.
 
+### Un toque, cero preguntas: atajo de iOS + iCloud Drive
+
+WhatsApp borra la metadata de las fotos enviadas como imagen. La vía sin fricción es **no pasar por WhatsApp para la foto**: un atajo en la hoja de compartir guarda el original (con fecha, hora y GPS) en `iCloud Drive/Denuncias`, y la app en la Mac lo levanta sola. Te sigue respondiendo por el chat "Mensaje para mí" con el número de trámite.
+
+Creá el atajo una vez (app Atajos → + → detalles → "Mostrar en hoja de compartir", tipo: Imágenes):
+
+1. **Recibir** `Imágenes` de la hoja de compartir
+2. **Convertir imagen** → formato `JPEG`, calidad máxima, **Conservar metadatos: SÍ**
+3. **Guardar archivo** → servicio `iCloud Drive`, carpeta `Denuncias`, **Preguntar dónde guardar: NO**
+4. (opcional) **Mostrar notificación** "Denuncia enviada 📷"
+
+Nombralo **Denunciar**. Uso: Fotos → Compartir → **Denunciar**. Listo.
+
+La app vigila esa carpeta (`DENUNCIA_FOLDER` para cambiarla), espera a que iCloud termine de bajar el archivo y lo mueve a `Denuncias/procesadas/`.
+
 ### Siempre encendida (auto-arranque)
 
 Para que el flujo del celular funcione sin abrir nada en la Mac:
@@ -142,7 +157,7 @@ Si te sirve, podés bancarlo en **[GitHub Sponsors](https://github.com/sponsors/
 
 ```bash
 npm run dev          # modo desarrollo (DevTools con Cmd+Opt+I, o OPEN_DEVTOOLS=1 npm run dev)
-npm test             # 87 tests (node --test)
+npm test             # 90 tests (node --test)
 npm run install-app  # wrapper .app de macOS vía osacompile
 ```
 
@@ -162,6 +177,7 @@ src/
     ├── ollamaSupervisor.js # arranca Ollama y baja el modelo si faltan
     ├── whatsappBot.js      # máquina de estados de la conversación con Boti
     ├── inboxWatcher.js     # chat "Mensaje para mí": cola de denuncias, reintentos
+    ├── folderWatcher.js    # iCloud Drive/Denuncias → misma cola, con EXIF intacto
     ├── aiAssistant.js      # Ollama: clasificación, OCR de patente, desambiguación
     ├── mibaAutoLogin.js    # ventana de login miBA + auto-fill
     ├── mibaCredentials.js  # almacenamiento encriptado (safeStorage)
