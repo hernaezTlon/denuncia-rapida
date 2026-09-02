@@ -378,3 +378,16 @@ test('non-fatal disconnect after max attempts keeps retrying slowly instead of d
     mock.timers.reset();
   }
 });
+
+test('login URL arriving in WAITING_MENU / WAITING_CATEGORY moves to WAITING_LOGIN (Boti skips the menus)', async () => {
+  // 2026-09-02 on the Air: Boti answered our "A" with "Elegí la primera opción y empezamos"
+  // + the botm.cc link while we still sat in waiting_category → stuck → AI cap → fail.
+  for (const start of [STATES.WAITING_MENU, STATES.WAITING_CATEGORY]) {
+    const { bot } = createTestBot(start);
+    const loginEvents = [];
+    bot.on('login-required', (url) => loginEvents.push(url));
+    await bot.handleBotResponse('Dale, *iniciá sesión* acá: \n\nhttps://botm.cc/l/34BhUti');
+    assert.equal(bot.state, STATES.WAITING_LOGIN, `from ${start}`);
+    assert.deepEqual(loginEvents, ['https://botm.cc/l/34BhUti'], `from ${start}`);
+  }
+});

@@ -360,7 +360,8 @@ class InboxWatcher {
     }
     if (!draft) return;
 
-    if (this.bot.getState() !== 'idle') {
+    // 'error' / 'completed' are what the bot is left in after the previous report — free.
+    if (!['idle', 'error', 'completed'].includes(this.bot.getState())) {
       if (!this._busyTimer) {
         await this._reply('Hay otra denuncia en curso — esta arranca apenas termine.');
         this._busyTimer = setTimeout(() => {

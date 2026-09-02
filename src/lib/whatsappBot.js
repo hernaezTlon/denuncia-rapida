@@ -667,6 +667,23 @@ class WhatsAppBot extends EventEmitter {
       }
     }
 
+    // Global handler: the miBA login link can arrive at ANY pre-login step — Boti
+    // sometimes skips the category/confirm menus ("Elegí la primera opción y
+    // empezamos" + botm.cc link right after our first "A"). Capture it wherever we are.
+    const preLoginStates = new Set([STATES.WAITING_MENU, STATES.WAITING_CATEGORY, STATES.WAITING_SUBCATEGORY, STATES.WAITING_CONFIRM_START]);
+    if (preLoginStates.has(this.state) && matchesAny(normalizedText, ['inicia sesion', 'iniciar sesion', 'botm.cc'])) {
+      const loginUrl = extractLoginUrl(text);
+      if (loginUrl) {
+        this.loginUrl = loginUrl;
+        this.emit('login-required', this.loginUrl);
+        this.log(`Login URL (desde ${this.state}): ${loginUrl}`);
+      }
+      this.state = STATES.WAITING_LOGIN;
+      this._pauseReportTimeout(); // Don't penalize user for login delay
+      this.emitProgress(30, 'Esperando login miBA (timeout pausado)...');
+      return;
+    }
+
     // Parse menu options (if any) once — used by all menu-based states
     const menu = parseMenu(text);
     const hasMenu = Object.keys(menu).length > 0;

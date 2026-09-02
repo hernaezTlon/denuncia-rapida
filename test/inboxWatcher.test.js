@@ -225,3 +225,16 @@ test('a second photo of the same car is a plate close-up, not a new draft', asyn
   assert.equal(watcher.drafts[0].ocr.plate, 'AAA111');
   assert.equal(watcher.drafts[0].platePhotoPath, '/tmp/crop.jpg');
 });
+
+test('_maybeFire treats a bot left in error/completed by the previous report as free', async () => {
+  // 2026-09-02: after a failed report the bot sat in "error"; the 30s retry then said
+  // "Hay otra denuncia en curso" forever.
+  for (const st of ['error', 'completed']) {
+    const { watcher, submitted, replies } = makeFlakyWatcher(0);
+    watcher.bot.getState = () => st;
+    watcher.pending = draft();
+    await watcher._maybeFire();
+    assert.equal(submitted.length, 1, `state ${st} must not block`);
+    assert.ok(!replies.some((t) => t.includes('otra denuncia en curso')), `state ${st}`);
+  }
+});
