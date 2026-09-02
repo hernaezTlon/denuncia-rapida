@@ -762,7 +762,7 @@ class WhatsAppBot extends EventEmitter {
         // login URL directly. Handle all three transitions.
 
         // Login URL can arrive at this stage (skipping the confirm step) — capture it.
-        if (matchesAny(normalizedText, ['inicia sesion', 'iniciar sesion', 'botm.cc'])) {
+        if (isLoginPrompt) {
           const loginUrl = extractLoginUrl(text);
           if (loginUrl) {
             this.loginUrl = loginUrl;
@@ -812,7 +812,7 @@ class WhatsAppBot extends EventEmitter {
 
       case STATES.WAITING_CONFIRM_START: {
         // Path 1 — fresh login: Boti sends botm.cc URL
-        if (matchesAny(normalizedText, ['inicia sesion', 'iniciar sesion', 'botm.cc'])) {
+        if (isLoginPrompt) {
           const loginUrl = extractLoginUrl(text);
           if (loginUrl) {
             this.loginUrl = loginUrl;

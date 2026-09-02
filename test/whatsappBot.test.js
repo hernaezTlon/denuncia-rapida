@@ -412,3 +412,14 @@ test('a new login link while WAITING_LOGIN re-emits login-required with the new 
   assert.equal(bot.state, STATES.WAITING_LOGIN);
   assert.deepEqual(loginEvents, ['https://botm.cc/l/3ayPSFT']);
 });
+
+test('BAX ad in WAITING_SUBCATEGORY / WAITING_CONFIRM_START is NOT a login link either', async () => {
+  for (const start of [STATES.WAITING_SUBCATEGORY, STATES.WAITING_CONFIRM_START]) {
+    const { bot } = createTestBot(start);
+    const loginEvents = [];
+    bot.on('login-required', (url) => loginEvents.push(url));
+    await bot.handleBotResponse('Para conocer más y descargarla entrá acá: https://botm.cc/l/3TyIPjP');
+    assert.equal(bot.state, start, `from ${start}`);
+    assert.deepEqual(loginEvents, [], `from ${start}`);
+  }
+});
