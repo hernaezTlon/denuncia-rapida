@@ -84,7 +84,7 @@ Con la app corriendo en tu Mac, usá el chat **"Mensaje para mí"** de WhatsApp 
 3. La app lee la patente (IA local + respaldo online), clasifica la infracción, entra a miBA sola y habla con Boti.
 4. **Te responde en el mismo chat con el número de trámite.** ✅
 
-Si falta la dirección, te la pide por el chat — un solo mensaje y sigue sola. Guarda la denuncia a medias hasta 24 horas y te recuerda una vez a los 30 minutos.
+Si falta la dirección, te la pide por el chat — un solo mensaje y sigue sola. Si la foto llegó sin fecha (WhatsApp la borra en las imágenes), te pregunta la hora: respondé `09:30` o `ahora`. Guarda la denuncia a medias hasta 24 horas y te recuerda una vez a los 30 minutos.
 También hay un daemon sin UI: `node scripts/inbox-daemon.js`.
 
 ### Qué hace sola cuando algo falla
@@ -142,7 +142,7 @@ Si te sirve, podés bancarlo en **[GitHub Sponsors](https://github.com/sponsors/
 
 ```bash
 npm run dev          # modo desarrollo (DevTools con Cmd+Opt+I, o OPEN_DEVTOOLS=1 npm run dev)
-npm test             # 79 tests (node --test)
+npm test             # 87 tests (node --test)
 npm run install-app  # wrapper .app de macOS vía osacompile
 ```
 

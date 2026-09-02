@@ -238,3 +238,31 @@ test('_maybeFire treats a bot left in error/completed by the previous report as 
     assert.ok(!replies.some((t) => t.includes('otra denuncia en curso')), `state ${st}`);
   }
 });
+
+test('photo without EXIF date: asks for the time once, then uses the answer', async () => {
+  const { watcher, submitted, replies } = makeFlakyWatcher(0);
+  watcher.drafts = [draft({ needsTime: true })];
+  watcher.pending = watcher.drafts[0];
+  await watcher._maybeFire();
+  assert.equal(submitted.length, 0, 'waits for the time');
+  assert.equal(replies.filter((r) => /hora/i.test(r)).length, 1);
+  await watcher._maybeFire();
+  assert.equal(replies.filter((r) => /hora/i.test(r)).length, 1, 'asked only once');
+
+  await watcher._onText('9:30');
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].time, '09:30');
+  assert.equal(submitted[0].date, todayDDMMYYYY());
+  assert.equal(submitted[0].isRecent, false);
+  assert.equal(submitted[0].description, 'Estacionado en lugar prohibido', '"9:30" must not become the description');
+});
+
+test('photo without EXIF date: "ahora" means just now', async () => {
+  const { watcher, submitted } = makeFlakyWatcher(0);
+  watcher.drafts = [draft({ needsTime: true })];
+  watcher.pending = watcher.drafts[0];
+  await watcher._maybeFire();
+  await watcher._onText('Ahora');
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].isRecent, true);
+});

@@ -27,6 +27,17 @@ const RETRY_DELAYS_MS = [30_000, 90_000];      // backoff between tries
 const BUSY_POLL_MS = 30_000;                   // re-check when another report is running
 const BOT_PREFIX = '🤖';
 
+// "9:30", "09.30", "9:30 hs" → "09:30"; "ahora" → { recent: true }. null if it's not a time.
+function parseTimeText(text) {
+  const t = String(text || '').trim();
+  if (/^ahora$/i.test(t)) return { recent: true };
+  const m = t.match(/^(\d{1,2})[:.hH](\d{2})\s*(?:hs?\.?)?$/);
+  if (!m) return null;
+  const h = Number(m[1]); const mi = Number(m[2]);
+  if (h > 23 || mi > 59) return null;
+  return { time: `${String(h).padStart(2, '0')}:${m[2]}` };
+}
+
 function isLikelyAddress(text) {
   const t = String(text || '').trim();
   if (t.length < 4 || t.length > 90) return false;
@@ -94,6 +105,8 @@ class InboxWatcher {
       isRecent: false,
       askedAddress: false,
       remindedAddress: false,
+      needsTime: false,   // no EXIF date → ask the user for the hour
+      askedTime: false,
       createdAt: now,
       expiresAt: now + PENDING_TTL_MS,
       attempts: 0,
@@ -249,6 +262,9 @@ class InboxWatcher {
         p.date = photoData.formattedDate;
         p.time = photoData.formattedTime;
         p.isRecent = photoProcessor.isRecent(photoData.dateTime);
+      } else if (!p.date) {
+        // WhatsApp strips EXIF from images (not documents): we don't know when it was taken
+        p.needsTime = true;
       }
 
       const plateLine = ocr?.plate ? `Patente: *${ocr.plate}* (${ocr.confidence})` : 'Patente: no pude leerla (Boti intentará)';
@@ -316,6 +332,17 @@ class InboxWatcher {
   }
 
   _routeText(text, { silent, draft }) {
+    const parsedTime = parseTimeText(text);
+    if (parsedTime) {
+      const t = draft || this.drafts.find((d) => d.needsTime) || this.pending;
+      if (!t) return;
+      t.date = todayDDMMYYYY();
+      t.time = parsedTime.recent ? nowHHMM() : parsedTime.time;
+      t.isRecent = !!parsedTime.recent;
+      t.needsTime = false;
+      if (!silent) this._reply(parsedTime.recent ? 'Hora: *ahora*' : `Hora de la foto: *${t.time}*`);
+      return;
+    }
     const p = draft || (isLikelyAddress(text) ? this._draftNeedingAddress() : this.pending);
     if (!p) return;
     if (!p.address && isLikelyAddress(text)) {
@@ -353,8 +380,12 @@ class InboxWatcher {
           await this._reply(`Falta la *dirección* de ${this._label(d)}: compartí la ubicación 📍 o escribila (ej: "Libertador y Olleros").`);
           this._scheduleReminder(d);
         }
-        continue;
       }
+      if (d.needsTime && !d.askedTime) {
+        d.askedTime = true;
+        await this._reply(`Sin fecha en la foto de ${this._label(d)}. ¿A qué *hora* la sacaste? (ej: 09:30) o escribí "ahora".`);
+      }
+      if (!d.address || d.needsTime) continue;
       draft = d;
       break;
     }
@@ -459,4 +490,4 @@ class InboxWatcher {
   }
 }
 
-module.exports = { InboxWatcher, isLikelyAddress, todayDDMMYYYY, nowHHMM };
+module.exports = { InboxWatcher, isLikelyAddress, parseTimeText, todayDDMMYYYY, nowHHMM };
