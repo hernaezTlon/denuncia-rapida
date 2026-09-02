@@ -1,4 +1,5 @@
 const test = require('node:test');
+const { mock } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { WhatsAppBot, STATES } = require('../src/lib/whatsappBot');
@@ -353,4 +354,27 @@ test('WAITING_PLATE_CONFIRM stops after repeated mismatches instead of looping',
   assert.ok(failure, 'report must fail');
   assert.equal(failure.retryable, false);
   assert.equal(bot.state, STATES.ERROR);
+});
+
+test('non-fatal disconnect after max attempts keeps retrying slowly instead of dying', () => {
+  const bot = new WhatsAppBot();
+  bot.maxReconnectAttempts = 1;
+  bot.reconnectAttempts = 1;
+  bot._awaitingScan = false;
+  let inits = 0;
+  bot.initialize = async () => { inits++; };
+  const events = [];
+  bot.on('disconnected', (r) => events.push(r));
+
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    bot._handleClose(408);
+    assert.equal(inits, 0, 'no immediate retry');
+    assert.deepEqual(events, ['max_retries'], 'UI still told about the outage');
+    mock.timers.tick(60_000);
+    assert.equal(inits, 1, 'retries after the slow backoff');
+    assert.equal(bot.reconnectAttempts, 0, 'counter reset so the fast ladder runs again');
+  } finally {
+    mock.timers.reset();
+  }
 });

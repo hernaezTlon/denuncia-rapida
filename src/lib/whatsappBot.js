@@ -29,6 +29,7 @@ function getAiAssistant() {
 const AI_MAX_CALLS_PER_REPORT = 5;
 const MAX_PLATE_REJECTIONS = 2;   // after this, abort instead of looping with Boti
 const STATE_STUCK_TIMEOUT_MS = 12_000;
+const SLOW_RETRY_MS = 60_000;      // after the fast reconnect ladder fails
 
 // States where we wait silently for a user action (miBA login). AI must NOT
 // intervene here — it just sends "A" to whatever and derails Boti into wrong flows.
@@ -256,6 +257,79 @@ class WhatsAppBot extends EventEmitter {
     this._sendCount = 0;
   }
 
+  // Connection closed: decide how (and whether) to reconnect.
+  _handleClose(statusCode) {
+    console.log('WhatsApp disconnected, status:', statusCode);
+    this.isReady = false;
+
+    // 405 = protocol error (stale session), 401 = unauthorized, loggedOut = user logged out
+    const isFatal = statusCode === this._DisconnectReason?.loggedOut
+      || statusCode === 405
+      || statusCode === 401;
+
+    if (isFatal) {
+      this.reconnectAttempts++;
+      if (this.reconnectAttempts > 2) {
+        // Tried clearing session and reconnecting twice — give up
+        console.log('Fatal disconnect persists after session clear, giving up');
+        this.emit('auth-failure', `Error de conexión (código ${statusCode}). Puede que la versión de WhatsApp sea incompatible.`);
+        this.emit('disconnected', 'fatal_error');
+        return;
+      }
+      // Clear stale auth and ask for fresh QR scan
+      console.log('Fatal disconnect, clearing session...');
+      const authDir = path.join(process.env.HOME || process.env.USERPROFILE, '.denuncia-rapida-session');
+      try {
+        fs.rmSync(authDir, { recursive: true, force: true });
+      } catch (e) {
+        console.error('Failed to clear session:', e.message);
+      }
+      // A 405 on a fresh session is a fingerprint rejection, not stale auth —
+      // flip the connect flavor before retrying (see the ladder comment above)
+      // and give WA breathing room so we don't trip its throttling (428).
+      let fatalDelay = 2000;
+      if (statusCode === 405) {
+        this._connFlavor = this._connFlavor === 'plain' ? 'pinned' : 'plain';
+        console.log(`405 → flipping connect flavor to '${this._connFlavor}'`);
+        fatalDelay = 15_000;
+      }
+      // Reinitialize to show new QR
+      console.log('Reinitializing for fresh QR...');
+      setTimeout(() => this.initialize(), fatalDelay);
+    } else if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      // Temporary disconnect — reconnect with backoff
+      this.reconnectAttempts++;
+      // 428 = WA rejecting our client fingerprint (or throttling). Flip the
+      // connection flavor (pinned-version/macOS ↔ default-version/Ubuntu) and
+      // give it breathing room — verified 2026-06-20: 'pinned' 428-looped
+      // while 'plain' got a QR instantly.
+      let delay = Math.min(1000 * this.reconnectAttempts, 5000);
+      if (statusCode === 428) {
+        this._connFlavor = this._connFlavor === 'plain' ? 'pinned' : 'plain';
+        console.log(`428 → flipping connect flavor to '${this._connFlavor}'`);
+        delay = 8000 * this.reconnectAttempts;
+      }
+      console.log(`Reconnecting (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay}ms...`);
+      setTimeout(() => this.initialize(), delay);
+    } else if (this._awaitingScan) {
+      // Still waiting for the user to scan the QR — keep the pairing alive
+      // indefinitely (each timeout just yields a fresh QR).
+      this.reconnectAttempts = 0;
+      console.log('QR aún sin escanear — reintentando pairing...');
+      setTimeout(() => this.initialize(), 3000);
+    } else {
+      // Fast ladder exhausted (network down, Mac just woke, WA outage). Never stay
+      // dead: tell the UI, then keep retrying slowly forever — the fast ladder
+      // runs again on the next attempt. (Aug 2026: gave up after 20s and sat
+      // dead for 6 days.)
+      console.log(`Max reconnect attempts reached — reintento en ${SLOW_RETRY_MS / 1000}s`);
+      this.emit('auth-failure', 'No se pudo conectar después de varios intentos');
+      this.emit('disconnected', 'max_retries');
+      this.reconnectAttempts = 0;
+      setTimeout(() => this.initialize(), SLOW_RETRY_MS);
+    }
+  }
+
   async initialize() {
     // Clean up previous socket if reconnecting
     if (this.sock) {
@@ -345,69 +419,7 @@ class WhatsAppBot extends EventEmitter {
 
       if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
-        console.log('WhatsApp disconnected, status:', statusCode);
-        this.isReady = false;
-
-        // 405 = protocol error (stale session), 401 = unauthorized, loggedOut = user logged out
-        const isFatal = statusCode === this._DisconnectReason.loggedOut
-          || statusCode === 405
-          || statusCode === 401;
-
-        if (isFatal) {
-          this.reconnectAttempts++;
-          if (this.reconnectAttempts > 2) {
-            // Tried clearing session and reconnecting twice — give up
-            console.log('Fatal disconnect persists after session clear, giving up');
-            this.emit('auth-failure', `Error de conexión (código ${statusCode}). Puede que la versión de WhatsApp sea incompatible.`);
-            this.emit('disconnected', 'fatal_error');
-            return;
-          }
-          // Clear stale auth and ask for fresh QR scan
-          console.log('Fatal disconnect, clearing session...');
-          const authDir = path.join(process.env.HOME || process.env.USERPROFILE, '.denuncia-rapida-session');
-          try {
-            fs.rmSync(authDir, { recursive: true, force: true });
-          } catch (e) {
-            console.error('Failed to clear session:', e.message);
-          }
-          // A 405 on a fresh session is a fingerprint rejection, not stale auth —
-          // flip the connect flavor before retrying (see the ladder comment above)
-          // and give WA breathing room so we don't trip its throttling (428).
-          let fatalDelay = 2000;
-          if (statusCode === 405) {
-            this._connFlavor = this._connFlavor === 'plain' ? 'pinned' : 'plain';
-            console.log(`405 → flipping connect flavor to '${this._connFlavor}'`);
-            fatalDelay = 15_000;
-          }
-          // Reinitialize to show new QR
-          console.log('Reinitializing for fresh QR...');
-          setTimeout(() => this.initialize(), fatalDelay);
-        } else if (this.reconnectAttempts < this.maxReconnectAttempts) {
-          // Temporary disconnect — reconnect with backoff
-          this.reconnectAttempts++;
-          // 428 = WA rejecting our client fingerprint (or throttling). Flip the
-          // connection flavor (pinned-version/macOS ↔ default-version/Ubuntu) and
-          // give it breathing room — verified 2026-06-20: 'pinned' 428-looped
-          // while 'plain' got a QR instantly.
-          let delay = Math.min(1000 * this.reconnectAttempts, 5000);
-          if (statusCode === 428) {
-            this._connFlavor = this._connFlavor === 'plain' ? 'pinned' : 'plain';
-            console.log(`428 → flipping connect flavor to '${this._connFlavor}'`);
-            delay = 8000 * this.reconnectAttempts;
-          }
-          console.log(`Reconnecting (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay}ms...`);
-          setTimeout(() => this.initialize(), delay);
-        } else if (this._awaitingScan) {
-          // Still waiting for the user to scan the QR — keep the pairing alive
-          // indefinitely (each timeout just yields a fresh QR).
-          this.reconnectAttempts = 0;
-          console.log('QR aún sin escanear — reintentando pairing...');
-          setTimeout(() => this.initialize(), 3000);
-        } else {
-          console.log('Max reconnect attempts reached');
-          this.emit('auth-failure', 'No se pudo conectar después de varios intentos');
-          this.emit('disconnected', 'max_retries');
-        }
+        this._handleClose(statusCode);
       }
     });
 
