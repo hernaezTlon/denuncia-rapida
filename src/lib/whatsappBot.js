@@ -670,8 +670,10 @@ class WhatsAppBot extends EventEmitter {
     // Global handler: the miBA login link can arrive at ANY pre-login step — Boti
     // sometimes skips the category/confirm menus ("Elegí la primera opción y
     // empezamos" + botm.cc link right after our first "A"). Capture it wherever we are.
+    // Only the "iniciá sesión" wording counts: Boti's BAX ad also carries a botm.cc link.
     const preLoginStates = new Set([STATES.WAITING_MENU, STATES.WAITING_CATEGORY, STATES.WAITING_SUBCATEGORY, STATES.WAITING_CONFIRM_START]);
-    if (preLoginStates.has(this.state) && matchesAny(normalizedText, ['inicia sesion', 'iniciar sesion', 'botm.cc'])) {
+    const isLoginPrompt = matchesAny(normalizedText, ['inicia sesion', 'iniciar sesion']);
+    if (preLoginStates.has(this.state) && isLoginPrompt) {
       const loginUrl = extractLoginUrl(text);
       if (loginUrl) {
         this.loginUrl = loginUrl;
@@ -842,6 +844,16 @@ class WhatsAppBot extends EventEmitter {
       }
 
       case STATES.WAITING_LOGIN: {
+        // Boti (re)sent the login link — point the miBA window at the right URL.
+        if (isLoginPrompt) {
+          const loginUrl = extractLoginUrl(text);
+          if (loginUrl && loginUrl !== this.loginUrl) {
+            this.loginUrl = loginUrl;
+            this.emit('login-required', this.loginUrl);
+            this.log(`Login URL actualizada: ${loginUrl}`);
+          }
+          break;
+        }
         // Wait silently for user to complete miBA login. Match specific miBA confirmations.
         if (matchesAny(normalizedText, ['ya estas en miba', 'sesion iniciada', 'iniciaste sesion'])
             || (matchesAny(normalizedText, ['miba']) && matchesAny(normalizedText, ['listo', 'estas']))) {

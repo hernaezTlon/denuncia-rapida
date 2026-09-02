@@ -391,3 +391,24 @@ test('login URL arriving in WAITING_MENU / WAITING_CATEGORY moves to WAITING_LOG
     assert.deepEqual(loginEvents, ['https://botm.cc/l/34BhUti'], `from ${start}`);
   }
 });
+
+test('BAX ad with a botm.cc download link is NOT a login link', async () => {
+  // 2026-09-02: "Para conocer más y descargarla entrá acá: https://botm.cc/l/33bSzCa" opened
+  // the miBA window on the BAX page; the real login link then arrived unseen.
+  const { bot } = createTestBot(STATES.WAITING_CATEGORY);
+  const loginEvents = [];
+  bot.on('login-required', (url) => loginEvents.push(url));
+  await bot.handleBotResponse('Para conocer más y descargarla entrá acá: https://botm.cc/l/33bSzCa');
+  assert.equal(bot.state, STATES.WAITING_CATEGORY);
+  assert.deepEqual(loginEvents, []);
+});
+
+test('a new login link while WAITING_LOGIN re-emits login-required with the new URL', async () => {
+  const { bot } = createTestBot(STATES.WAITING_LOGIN);
+  bot.loginUrl = 'https://botm.cc/l/OLD';
+  const loginEvents = [];
+  bot.on('login-required', (url) => loginEvents.push(url));
+  await bot.handleBotResponse('Dale, *iniciá sesión* acá: \n\nhttps://botm.cc/l/3ayPSFT');
+  assert.equal(bot.state, STATES.WAITING_LOGIN);
+  assert.deepEqual(loginEvents, ['https://botm.cc/l/3ayPSFT']);
+});
