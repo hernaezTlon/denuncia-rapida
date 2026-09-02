@@ -70,5 +70,16 @@
     "dmg": {
       "title": "Denuncia Rápida"
     }
+  },
+  "overrides": {
+    "onnxruntime-node": "1.23.2"
+  },
+  "allowScripts": {
+    "onnxruntime-node@1.23.2": true,
+    "sharp@0.34.5": true,
+    "electron@33.4.11": true,
+    "exifreader@4.36.0": true,
+    "protobufjs@7.6.1": true,
+    "baileys@7.0.0-rc14": true
   }
 }
