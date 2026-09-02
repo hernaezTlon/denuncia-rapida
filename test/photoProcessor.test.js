@@ -142,3 +142,73 @@ test('isRecent handles ISO strings', () => {
   assert.equal(isRecent(thirtyMinutesAgo), true);
   assert.equal(isRecent(threeHoursAgo), false);
 });
+
+test('usigStreetName reorders "APELLIDO, NOMBRE" and moves AV. to the front', () => {
+  const { usigStreetName } = require('../src/lib/photoProcessor');
+  assert.equal(usigStreetName('SALGUERO, JERONIMO'), 'JERONIMO SALGUERO');
+  assert.equal(usigStreetName('JURAMENTO AV.'), 'AV. JURAMENTO');
+  assert.equal(usigStreetName('CIUDAD DE LA PAZ'), 'CIUDAD DE LA PAZ');
+});
+
+test('buildAddressFromUsig prefers the door number and falls back to the corner', () => {
+  const { buildAddressFromUsig } = require('../src/lib/photoProcessor');
+  const withDoor = buildAddressFromUsig({ puerta: 'SALGUERO, JERONIMO 88', esquina: 'SALGUERO, JERONIMO y MITRE, BARTOLOME' });
+  assert.equal(withDoor.formatted, 'JERONIMO SALGUERO 88');
+  assert.equal(withDoor.number, '88');
+  assert.equal(withDoor.source, 'usig');
+
+  const corner = buildAddressFromUsig({ esquina: 'JURAMENTO AV. y CIUDAD DE LA PAZ' });
+  assert.equal(corner.formatted, 'AV. JURAMENTO Y CIUDAD DE LA PAZ');
+  assert.equal(corner.number, '');
+
+  assert.equal(buildAddressFromUsig({}), null);
+  assert.equal(buildAddressFromUsig(null), null);
+});
+
+test('resolveAddress uses USIG first and only calls Nominatim when USIG has no number', async () => {
+  const { resolveAddress } = require('../src/lib/photoProcessor');
+  const urls = [];
+  const fetchMock = async (url) => {
+    urls.push(url);
+    if (url.includes('usig')) {
+      return { ok: true, text: async () => JSON.stringify({ puerta: 'JURAMENTO AV. 2445' }) };
+    }
+    throw new Error('nominatim should not be called');
+  };
+  const result = await resolveAddress(-34.5623, -58.4573, { fetchImpl: fetchMock, timeoutMs: 50 });
+  assert.equal(result.status, GEOCODE_STATUS.RESOLVED);
+  assert.equal(result.address.formatted, 'AV. JURAMENTO 2445');
+  assert.equal(urls.length, 1);
+});
+
+test('resolveAddress falls back to Nominatim outside CABA and keeps a numbered result', async () => {
+  const { resolveAddress } = require('../src/lib/photoProcessor');
+  const fetchMock = async (url) => {
+    if (url.includes('usig')) {
+      return { ok: true, text: async () => '{"error":"fuera de CABA"}' };
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        display_name: '1000 Avenida Maipú, Vicente López',
+        address: { road: 'Avenida Maipú', house_number: '1000', city: 'Vicente López' }
+      })
+    };
+  };
+  const result = await resolveAddress(-34.52, -58.48, { fetchImpl: fetchMock, timeoutMs: 50 });
+  assert.equal(result.status, GEOCODE_STATUS.RESOLVED);
+  assert.equal(result.address.formatted, 'AVENIDA MAIPÚ 1000');
+});
+
+test('resolveAddress prefers a USIG corner over a Nominatim street without number', async () => {
+  const { resolveAddress } = require('../src/lib/photoProcessor');
+  const fetchMock = async (url) => {
+    if (url.includes('usig')) {
+      return { ok: true, text: async () => JSON.stringify({ esquina: 'HONDURAS y THAMES' }) };
+    }
+    return { ok: true, json: async () => ({ display_name: 'Honduras, Palermo', address: { road: 'Honduras' } }) };
+  };
+  const result = await resolveAddress(-34.58, -58.43, { fetchImpl: fetchMock, timeoutMs: 50 });
+  assert.equal(result.address.formatted, 'HONDURAS Y THAMES');
+  assert.equal(result.address.source, 'usig');
+});

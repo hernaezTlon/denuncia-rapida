@@ -18,6 +18,7 @@ const photoProcessor = require('../src/lib/photoProcessor');
 const reportValidation = require('../src/lib/reportValidation');
 const reportHistory = require('../src/lib/reportHistory');
 const transcribe = require('../src/lib/transcribe');
+const { superviseOllama } = require('../src/lib/ollamaSupervisor');
 
 function arg(flag) {
   const i = process.argv.indexOf(flag);
@@ -25,6 +26,7 @@ function arg(flag) {
 }
 
 (async () => {
+  superviseOllama({ log: (t) => console.log('🧠', t) });
   const bot = new WhatsAppBot();
   const watcher = new InboxWatcher(
     bot,

@@ -19,7 +19,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const PENDING_TTL_MS = 15 * 60 * 1000;   // drop a half-built report after 15 min
+const PENDING_TTL_MS = 24 * 60 * 60 * 1000;   // keep a half-built report for a day
+const ADDRESS_REMINDER_MS = 30 * 60 * 1000;   // one reminder if the address never came
+const NEW_VEHICLE_GAP_MS = 10 * 60 * 1000;    // photo 10+ min after the last one = another car
+const MAX_ATTEMPTS = 3;                        // Boti conversation tries per report
+const RETRY_DELAYS_MS = [30_000, 90_000];      // backoff between tries
+const BUSY_POLL_MS = 30_000;                   // re-check when another report is running
 const BOT_PREFIX = '🤖';
 
 function isLikelyAddress(text) {
@@ -62,8 +67,47 @@ class InboxWatcher {
     this.selfJids = new Set();
     this.sentIds = new Set();
     this.seenInbound = new Set();   // dedup: reconnects can re-deliver offline messages
-    this.pending = null;      // { photoPath, platePhotoPath, address, description, ocr, processing, askedAddress, expiresAt }
+    // Drafts, oldest first. A draft is one vehicle: { photoPath, platePhotoPath, address,
+    // description, ocr, date, time, processing, askedAddress, expiresAt, attempts, createdAt }
+    this.drafts = [];
     this.firing = false;
+    this.retryDelaysMs = RETRY_DELAYS_MS;
+    this.busyPollMs = BUSY_POLL_MS;
+    this._busyTimer = null;
+    this._sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  }
+
+  // Back-compat: "pending" is the newest draft (the one that takes text/location/close-ups).
+  get pending() { return this.drafts.length ? this.drafts[this.drafts.length - 1] : null; }
+  set pending(value) { this.drafts = value ? [value] : []; }
+
+  _newDraft(photoPath) {
+    const now = Date.now();
+    return {
+      photoPath,
+      platePhotoPath: null,
+      address: null,
+      description: null,
+      ocr: null,
+      date: null,
+      time: null,
+      isRecent: false,
+      askedAddress: false,
+      remindedAddress: false,
+      createdAt: now,
+      expiresAt: now + PENDING_TTL_MS,
+      attempts: 0,
+      needsCloseup: false,
+      processing: null
+    };
+  }
+
+  _dropDraft(draft) {
+    this.drafts = this.drafts.filter((d) => d !== draft);
+  }
+
+  _label(draft) {
+    return draft?.ocr?.plate ? `*${draft.ocr.plate}*` : 'la foto';
   }
 
   attach() {
@@ -134,48 +178,61 @@ class InboxWatcher {
       return;
     }
 
-    const photoPath = path.join(os.tmpdir(), `inbox-${Date.now()}.jpg`);
+    const photoPath = path.join(os.tmpdir(), `inbox-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.jpg`);
     fs.writeFileSync(photoPath, buffer);
 
-    // Second photo on an existing pending report = plate close-up
-    if (this.pending && this.pending.photoPath && !this.firing) {
-      this.pending.platePhotoPath = photoPath;
-      this._log('inbox: segunda foto → close-up de patente');
+    // Is this a close-up of the vehicle we already have, or another vehicle?
+    const current = this.pending;
+    if (current && current.photoPath) {
+      if (current.processing) await current.processing.catch(() => {});
+      const recent = (Date.now() - current.createdAt) < NEW_VEHICLE_GAP_MS;
       const ocr = await aiAssistant.ocrPlate(photoPath).catch(() => null);
-      if (ocr?.plate && (!this.pending.ocr?.plate || ocr.detectionScore)) {
-        this.pending.ocr = ocr;
-        if (ocr.cropPath) this.pending.platePhotoPath = ocr.cropPath;
-        await this._reply(`Patente actualizada: *${ocr.plate}* (${ocr.confidence})`);
+      const sameVehicle = recent && this._isSameVehicle(current, ocr);
+      if (sameVehicle) {
+        this._log('inbox: segunda foto → close-up de patente');
+        if (ocr?.cropPath) current.platePhotoPath = ocr.cropPath;
+        else if (!current.platePhotoPath) current.platePhotoPath = photoPath;
+        if (ocr?.plate && (!current.ocr?.plate || ocr.detectionScore)) {
+          current.ocr = ocr;
+          await this._reply(`Patente actualizada: *${ocr.plate}* (${ocr.confidence})`);
+        }
+        if (current.needsCloseup) {
+          current.needsCloseup = false;
+          current.attempts = 0;
+        }
+        return this._maybeFire();
       }
-      return this._maybeFire();
+      this._log('inbox: foto de otro vehículo → nueva denuncia en cola');
+      return this._startDraft(photoPath, imageMsg, isDocument, ocr);
     }
 
-    this.pending = {
-      photoPath,
-      platePhotoPath: null,
-      address: null,
-      description: null,
-      ocr: null,
-      date: null,
-      time: null,
-      isRecent: false,
-      askedAddress: false,
-      expiresAt: Date.now() + PENDING_TTL_MS,
-      processing: null
-    };
+    return this._startDraft(photoPath, imageMsg, isDocument, null);
+  }
+
+  // Same vehicle unless both photos read a plate and the plates differ.
+  _isSameVehicle(draft, ocr) {
+    const a = String(draft?.ocr?.plate || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const b = String(ocr?.plate || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!a || !b) return true;
+    return a === b;
+  }
+
+  async _startDraft(photoPath, imageMsg, isDocument, precomputedOcr) {
+    const { aiAssistant, photoProcessor } = this.deps;
+    const draft = this._newDraft(photoPath);
+    this.drafts.push(draft);
     await this._reply(`Foto recibida ✓ ${isDocument ? '(con metadata)' : ''} — leyendo patente y datos…`);
 
     const caption = (imageMsg.caption || '').trim();
-    if (caption) this._routeText(caption, { silent: true });
+    if (caption) this._routeText(caption, { silent: true, draft });
 
-    this.pending.processing = (async () => {
+    draft.processing = (async () => {
       const [photoData, ocr, category] = await Promise.all([
         photoProcessor.extractPhotoData(photoPath).catch(() => ({})),
-        aiAssistant.ocrPlate(photoPath).catch(() => null),
+        precomputedOcr ? Promise.resolve(precomputedOcr) : aiAssistant.ocrPlate(photoPath).catch(() => null),
         aiAssistant.classifyViolation(photoPath).catch(() => null)
       ]);
-      const p = this.pending;
-      if (!p || p.photoPath !== photoPath) return;
+      const p = draft;
 
       if (ocr) {
         if (ocr.plate) p.ocr = ocr;
@@ -183,11 +240,9 @@ class InboxWatcher {
         if (ocr.cropPath) p.platePhotoPath = ocr.cropPath;
       }
       if (!p.description && category) p.description = category;
-      // EXIF GPS survives when sent "as document" — free address
-      if (!p.address && photoData?.address?.formatted && !photoData.address.needsNumber) {
+      // EXIF GPS survives when sent "as document" — free address (USIG first, numbered)
+      if (!p.address && photoData?.address?.formatted) {
         p.address = photoData.address.formatted;
-      } else if (!p.address && photoData?.address?.formatted) {
-        p.address = photoData.address.formatted; // still better than nothing; Boti may accept
       }
       // EXIF date survives "as document" too — report the moment of the photo, not of the share
       if (photoData?.formattedDate) {
@@ -202,18 +257,25 @@ class InboxWatcher {
       await this._reply([plateLine, descLine, dateLine].filter(Boolean).join('\n'));
     })();
 
-    await this.pending.processing;
+    await draft.processing;
+    draft.processing = null;
     await this._maybeFire();
+  }
+
+  // The draft an address answer belongs to: the oldest one still missing it (we asked in order).
+  _draftNeedingAddress() {
+    return this.drafts.find((d) => !d.address) || this.pending;
   }
 
   async _onLocation(lat, lon) {
     if (!this.pending) return this._reply('Mandame primero la foto del vehículo 📷');
     const { photoProcessor } = this.deps;
+    const draft = this._draftNeedingAddress();
     await this._reply('Ubicación recibida 📍 — buscando la dirección…');
-    const result = await photoProcessor.reverseGeocodeWithRetry(lat, lon, {}).catch(() => null);
+    const result = await photoProcessor.resolveAddress(lat, lon, {}).catch(() => null);
     const formatted = result?.address?.formatted;
     if (formatted) {
-      this.pending.address = formatted;
+      draft.address = formatted;
       await this._reply(`Dirección: *${formatted}*`);
       await this._maybeFire();
     } else {
@@ -253,8 +315,8 @@ class InboxWatcher {
     await this._maybeFire();
   }
 
-  _routeText(text, { silent }) {
-    const p = this.pending;
+  _routeText(text, { silent, draft }) {
+    const p = draft || (isLikelyAddress(text) ? this._draftNeedingAddress() : this.pending);
     if (!p) return;
     if (!p.address && isLikelyAddress(text)) {
       p.address = text.trim();
@@ -268,25 +330,61 @@ class InboxWatcher {
   // ---------- firing ----------
 
   async _maybeFire() {
-    const p = this.pending;
-    if (!p || this.firing) return;
-    if (Date.now() > p.expiresAt) { this.pending = null; return; }
-    if (p.processing) await p.processing.catch(() => {});
+    if (this.firing) return;
 
-    if (!p.address) {
-      if (!p.askedAddress) {
-        p.askedAddress = true;
-        await this._reply('Falta la *dirección*: compartí la ubicación 📍 o escribila (ej: "Libertador y Olleros").');
+    // Expire stale drafts, remind about missing addresses
+    const now = Date.now();
+    for (const d of [...this.drafts]) {
+      if (now > d.expiresAt) {
+        this._dropDraft(d);
+        await this._reply(`Descarté la denuncia de ${this._label(d)}: pasó un día sin dirección.`);
+      }
+    }
+
+    // First draft that can run
+    let draft = null;
+    for (const d of this.drafts) {
+      if (d.processing) await d.processing.catch(() => {});
+      if (d.needsCloseup) continue;
+      if (!d.address) {
+        if (!d.askedAddress) {
+          d.askedAddress = true;
+          d.askedAt = Date.now();
+          await this._reply(`Falta la *dirección* de ${this._label(d)}: compartí la ubicación 📍 o escribila (ej: "Libertador y Olleros").`);
+          this._scheduleReminder(d);
+        }
+        continue;
+      }
+      draft = d;
+      break;
+    }
+    if (!draft) return;
+
+    if (this.bot.getState() !== 'idle') {
+      if (!this._busyTimer) {
+        await this._reply('Hay otra denuncia en curso — esta arranca apenas termine.');
+        this._busyTimer = setTimeout(() => {
+          this._busyTimer = null;
+          this._maybeFire().catch(() => {});
+        }, this.busyPollMs);
+        if (this._busyTimer.unref) this._busyTimer.unref();
       }
       return;
     }
-    if (this.bot.getState() !== 'idle') {
-      await this._reply('Hay otra denuncia en curso — esta arranca apenas termine.');
-      // simple retry loop: check again in 30s
-      setTimeout(() => this._maybeFire().catch(() => {}), 30_000);
-      return;
-    }
 
+    await this._fire(draft);
+  }
+
+  _scheduleReminder(draft) {
+    const t = setTimeout(async () => {
+      if (!this.drafts.includes(draft) || draft.address || draft.remindedAddress) return;
+      draft.remindedAddress = true;
+      await this._reply(`Sigo esperando la *dirección* de ${this._label(draft)} 📍 (la guardo hasta mañana).`);
+    }, ADDRESS_REMINDER_MS);
+    if (t.unref) t.unref();
+  }
+
+  async _fire(p) {
     this.firing = true;
     const { reportValidation, reportHistory } = this.deps;
     const report = {
@@ -297,30 +395,47 @@ class InboxWatcher {
       contextPhotoPath: p.photoPath,
       platePhotoPath: p.platePhotoPath || p.photoPath,
       detectedPlate: p.ocr && p.ocr.confidence !== 'baja' ? p.ocr.plate : null,
+      plateGuess: p.ocr?.plate || null,
+      plateConfidence: p.ocr?.confidence || null,
       isRecent: !!p.isRecent
     };
     const v = reportValidation.validateReportData(report);
     Object.assign(report, v.sanitized);
     if (!v.valid) {
       this.firing = false;
+      this._dropDraft(p);
       await this._reply(`✗ Datos inválidos: ${JSON.stringify(v.errors)}`);
       return;
     }
 
-    await this._reply(`🚀 Enviando denuncia a BA Ciudad…\n📍 ${report.address}\n🚗 ${report.detectedPlate || 's/patente'} · ${report.description}`);
+    p.attempts += 1;
+    const tryLabel = p.attempts > 1 ? ` (intento ${p.attempts}/${MAX_ATTEMPTS})` : '';
+    await this._reply(`🚀 Enviando denuncia a BA Ciudad…${tryLabel}\n📍 ${report.address}\n🚗 ${report.detectedPlate || report.plateGuess || 's/patente'} · ${report.description}`);
     const startedAt = new Date().toISOString();
+    let retryWait = 0;
     try {
       const result = await this.bot.submitReport(report);
       await this._reply(`✅ *Denuncia enviada.*\nN° de trámite: *${result.ticketNumber}*`);
-      reportHistory.saveReport({ startedAt, input: report, sanitized: report, success: true, ticketNumber: result.ticketNumber, duration: result.duration, source: 'whatsapp-inbox' });
-      this.pending = null;
+      reportHistory.saveReport({ startedAt, input: report, sanitized: report, success: true, ticketNumber: result.ticketNumber, duration: result.duration, attempts: p.attempts, source: 'whatsapp-inbox' });
+      this._dropDraft(p);
     } catch (e) {
-      await this._reply(`✗ Falló: ${e.message}\nMandá la foto de nuevo para reintentar.`);
-      reportHistory.saveReport({ startedAt, input: report, sanitized: report, success: false, error: e.message, source: 'whatsapp-inbox' });
-      this.pending = null;
-    } finally {
-      this.firing = false;
+      reportHistory.saveReport({ startedAt, input: report, sanitized: report, success: false, error: e.message, attempts: p.attempts, source: 'whatsapp-inbox' });
+      if (e.retryable === false) {
+        // Boti and our OCR disagree on the plate. A close-up fixes it; the draft waits for one.
+        p.needsCloseup = true;
+        await this._reply(`✗ ${e.message}\nMandá una foto de cerca de la patente y la reintento sola.`);
+      } else if (p.attempts < MAX_ATTEMPTS) {
+        retryWait = this.retryDelaysMs[Math.min(p.attempts - 1, this.retryDelaysMs.length - 1)];
+        await this._reply(`✗ Falló: ${e.message}\nReintento en ${Math.round(retryWait / 1000)}s…`);
+      } else {
+        this._dropDraft(p);
+        await this._reply(`✗ Falló ${MAX_ATTEMPTS} veces: ${e.message}\nMandá la foto de nuevo para reintentar.`);
+      }
     }
+    this.firing = false;
+    if (retryWait) await this._sleep(retryWait);
+    // Retry, or the next draft in the queue
+    if (this.drafts.length) await this._maybeFire();
   }
 
   // ---------- plumbing ----------

@@ -27,6 +27,7 @@ function getAiAssistant() {
 }
 
 const AI_MAX_CALLS_PER_REPORT = 5;
+const MAX_PLATE_REJECTIONS = 2;   // after this, abort instead of looping with Boti
 const STATE_STUCK_TIMEOUT_MS = 12_000;
 
 // States where we wait silently for a user action (miBA login). AI must NOT
@@ -106,6 +107,14 @@ function extractBotiPlate(text) {
   const m = text.match(/(?:anot[eé]\s+esta\s+patente|patente\s+detectada)\s*:?\s*([A-Z0-9\s.]{5,15})/i);
   if (!m) return null;
   return m[1].toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
+
+// Plate we can type when Boti asks for text: the reliable read first, else the best
+// guess (low-confidence local OCR). Boti re-confirms with its own OCR anyway, so a guess
+// beats failing the report.
+function plateForText(report) {
+  if (!report) return null;
+  return report.detectedPlate || report.plateGuess || null;
 }
 
 function platesEqual(a, b) {
@@ -467,6 +476,7 @@ class WhatsAppBot extends EventEmitter {
     this.aiCallsCount = 0;
     this.lastBotMessage = null;
     this._lastPlateTextSentAt = null;
+    this.plateRejections = 0;
 
     this.state = STATES.WAITING_MENU;
     this.emitProgress(10, 'Iniciando conversacion...');
@@ -626,7 +636,7 @@ class WhatsAppBot extends EventEmitter {
         this.log('Ya enviamos la patente por texto hace poco, ignorando mensaje duplicado de Boti');
         return;
       }
-      const ourPlate = this.currentReport?.detectedPlate;
+      const ourPlate = plateForText(this.currentReport);
       if (ourPlate) {
         await this.delay(500);
         await this.sendMessage(ourPlate);
@@ -921,7 +931,7 @@ class WhatsAppBot extends EventEmitter {
           'patente por escrito', 'escribi la patente', 'escribila',
           'no veo bien', 'no puedo leer'
         ])) {
-          const ourPlate = this.currentReport?.detectedPlate;
+          const ourPlate = plateForText(this.currentReport);
           if (ourPlate) {
             await this.delay(500);
             await this.sendMessage(ourPlate);
@@ -957,6 +967,14 @@ class WhatsAppBot extends EventEmitter {
 
         if (hasMenu && matchesAny(normalizedText, ['patente', 'dominio'])) {
           if (ourPlate && botiPlate && !platesEqual(ourPlate, botiPlate)) {
+            this.plateRejections = (this.plateRejections || 0) + 1;
+            if (this.plateRejections > MAX_PLATE_REJECTIONS) {
+              // Boti keeps reading another vehicle. Never confirm a wrong plate: stop here.
+              const err = new Error(`Boti insiste con la patente "${botiPlate}" y la nuestra es "${ourPlate}". Necesito un close-up de la patente.`);
+              err.retryable = false;
+              this.failReport(err);
+              break;
+            }
             // Mismatch! Reject by picking the "No" option.
             const noKey = findMenuOption(menu, [['no']]);
             if (noKey) {
@@ -1135,13 +1153,14 @@ class WhatsAppBot extends EventEmitter {
         case 'send_text':
           if (decision.text) {
             const ourPlate = this.currentReport?.detectedPlate;
+            const typedPlate = plateForText(this.currentReport);
             const plateRelatedState = this.state === STATES.WAITING_PLATE_PHOTO || this.state === STATES.WAITING_PLATE_CONFIRM;
             // 1) AI sent a placeholder/template like "[PATENTE AQUÍ]" — override with our real OCR
             if (plateRelatedState && /\[[A-ZÁÉÍÓÚÑa-záéíóúñ ]+\]/.test(decision.text)) {
-              if (ourPlate) {
-                this.log(`IA usó placeholder en "${decision.text}", reemplazando con OCR: ${ourPlate}`);
-                await this.sendMessage(ourPlate);
-                this.history.push({ from: 'app', text: ourPlate });
+              if (typedPlate) {
+                this.log(`IA usó placeholder en "${decision.text}", reemplazando con OCR: ${typedPlate}`);
+                await this.sendMessage(typedPlate);
+                this.history.push({ from: 'app', text: typedPlate });
               } else {
                 this.failReport(new Error('IA quiso usar placeholder sin OCR disponible'));
               }
@@ -1350,4 +1369,4 @@ class WhatsAppBot extends EventEmitter {
   }
 }
 
-module.exports = { WhatsAppBot, STATES };
+module.exports = { WhatsAppBot, STATES, plateForText };

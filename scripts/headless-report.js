@@ -66,7 +66,9 @@ function arg(flag, fallback) {
     description: arg('--desc', category),
     contextPhotoPath: photoPath,
     platePhotoPath: (ocr && ocr.cropPath) || photoPath,
-    detectedPlate: ocr && ocr.confidence !== 'baja' ? ocr.plate : null
+    detectedPlate: ocr && ocr.confidence !== 'baja' ? ocr.plate : null,
+    plateGuess: (ocr && ocr.plate) || null,
+    plateConfidence: (ocr && ocr.confidence) || null
   };
 
   const v = validateReportData(report);

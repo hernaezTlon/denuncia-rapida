@@ -84,8 +84,16 @@ Con la app corriendo en tu Mac, usá el chat **"Mensaje para mí"** de WhatsApp 
 3. La app lee la patente (IA local + respaldo online), clasifica la infracción, entra a miBA sola y habla con Boti.
 4. **Te responde en el mismo chat con el número de trámite.** ✅
 
-Si falta la dirección, te la pide por el chat — un solo mensaje y sigue sola.
+Si falta la dirección, te la pide por el chat — un solo mensaje y sigue sola. Guarda la denuncia a medias hasta 24 horas y te recuerda una vez a los 30 minutos.
 También hay un daemon sin UI: `node scripts/inbox-daemon.js`.
+
+### Qué hace sola cuando algo falla
+
+- **Boti se cuelga o corta**: reintenta la conversación hasta 3 veces (30 s y 90 s de espera). Solo te avisa si falla las tres.
+- **No lee bien la patente**: si Boti pide la patente por texto, manda igual la mejor lectura que tenga. Boti la confirma con su propio OCR.
+- **Boti lee otra patente** (un auto de fondo): le dice que no hasta 2 veces. Después te pide una foto de cerca de la patente y con esa reintenta sola.
+- **Dos fotos, dos autos**: si la segunda foto tiene otra patente, arma una segunda denuncia y la manda cuando termina la primera. Si es la misma patente (o no se lee), la usa como close-up.
+- **Ollama apagado o sin modelo**: lo arranca y descarga el modelo sola. Lo revisa cada 10 minutos.
 
 ### La receta de cero interacciones extra
 
@@ -93,7 +101,7 @@ WhatsApp **borra el GPS** de las fotos enviadas como imagen. Si la mandás como 
 
 > Compartir → WhatsApp → tu chat → clip 📎 → **Documento** → elegir la foto.
 
-Con eso la app resuelve **dirección, fecha y hora reales de la foto** sola (usa la fecha EXIF, no el momento del envío — podés mandar la foto horas después). Si la mandás como imagen normal, solo te va a pedir la ubicación: un toque en 📍 y sigue.
+Con eso la app resuelve **dirección, fecha y hora reales de la foto** sola (usa la fecha EXIF, no el momento del envío — podés mandar la foto horas después). La dirección sale del geocoder oficial de la Ciudad (USIG), con altura y los nombres de calle que usa Boti. Si la mandás como imagen normal, solo te va a pedir la ubicación: un toque en 📍 y sigue.
 
 ### Siempre encendida (auto-arranque)
 
@@ -120,7 +128,7 @@ Si la Mac estaba dormida cuando mandaste la foto, la denuncia sale sola al despe
 
 - Las fotos, el OCR y la clasificación se procesan **100% en tu máquina** (Ollama local).
 - Tu sesión de WhatsApp y tus credenciales de miBA viven solo en tu compu (`~/.denuncia-rapida-session/` y el llavero del sistema).
-- No hay servidores, ni analytics, ni claves de API. El único tráfico de red es: WhatsApp, miBA y OpenStreetMap (para la dirección).
+- No hay servidores, ni analytics, ni claves de API. El único tráfico de red es: WhatsApp, miBA, el geocoder oficial de la Ciudad (USIG) y OpenStreetMap como respaldo (para la dirección).
 
 ---
 
@@ -134,7 +142,7 @@ Si te sirve, podés bancarlo en **[GitHub Sponsors](https://github.com/sponsors/
 
 ```bash
 npm run dev          # modo desarrollo (DevTools con Cmd+Opt+I, o OPEN_DEVTOOLS=1 npm run dev)
-npm test             # 48 tests (node --test)
+npm test             # 79 tests (node --test)
 npm run install-app  # wrapper .app de macOS vía osacompile
 ```
 
@@ -150,8 +158,10 @@ src/
 │   ├── styles.css        # estética "panel de despacho"
 │   └── app.js
 └── lib/
-    ├── photoProcessor.js   # EXIF + geocoding Nominatim
+    ├── photoProcessor.js   # EXIF + geocoding (USIG oficial → Nominatim)
+    ├── ollamaSupervisor.js # arranca Ollama y baja el modelo si faltan
     ├── whatsappBot.js      # máquina de estados de la conversación con Boti
+    ├── inboxWatcher.js     # chat "Mensaje para mí": cola de denuncias, reintentos
     ├── aiAssistant.js      # Ollama: clasificación, OCR de patente, desambiguación
     ├── mibaAutoLogin.js    # ventana de login miBA + auto-fill
     ├── mibaCredentials.js  # almacenamiento encriptado (safeStorage)

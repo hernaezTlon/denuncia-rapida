@@ -13,6 +13,7 @@ const mibaCredentials = require('../lib/mibaCredentials');
 const { InboxWatcher } = require('../lib/inboxWatcher');
 const photoProcessor = require('../lib/photoProcessor');
 const transcribe = require('../lib/transcribe');
+const ollamaSupervisor = require('../lib/ollamaSupervisor');
 
 const mibaLogin = new MiBAAutoLogin();
 let inboxWatcher = null;
@@ -60,6 +61,15 @@ app.whenReady().then(() => {
   } catch (_) { /* ignore */ }
 
   createWindow();
+
+  // Local AI self-heals: start Ollama if it is down, pull the model if it is missing,
+  // re-check every 10 minutes. Progress lines go to the chat panel.
+  ollamaSupervisor.superviseOllama({
+    log: (text) => {
+      console.log('[ollama]', text);
+      try { mainWindow?.webContents.send('whatsapp-message', { from: 'system', text: `🧠 ${text}` }); } catch (_) { /* window gone */ }
+    }
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -327,6 +337,9 @@ ipcMain.handle('ai-repair-address', async (event, { photoPath, gps, partialAddre
 
 // AI: check Ollama is reachable and model is installed
 ipcMain.handle('ai-ensure-ready', async () => {
+  // Heal first (start Ollama / pull model), then report the plain status
+  const healed = await ollamaSupervisor.ensureOllamaReady({ log: (t) => console.log('[ollama]', t) });
+  if (!healed.ok) return { ok: false, error: healed.error };
   return aiAssistant.ensureModelInstalled();
 });
 

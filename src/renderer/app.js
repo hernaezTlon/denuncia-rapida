@@ -573,7 +573,9 @@ async function submitReport() {
     contextPhotoPath: contextPath,
     platePhotoPath: platePath,
     isRecent: false,
-    detectedPlate: state.detectedPlate && state.detectedPlate.confidence !== 'baja' ? state.detectedPlate.plate : null
+    detectedPlate: state.detectedPlate && state.detectedPlate.confidence !== 'baja' ? state.detectedPlate.plate : null,
+    plateGuess: state.detectedPlate ? state.detectedPlate.plate : null,
+    plateConfidence: state.detectedPlate ? state.detectedPlate.confidence : null
   };
 
   const validation = await window.api.validateReportData(reportData);

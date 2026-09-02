@@ -307,3 +307,50 @@ test('AI disambiguation aborts after exceeding call cap', async () => {
   const err = await failPromise;
   assert.match(err.message, /límite/i);
 });
+
+test('WAITING_PLATE_PHOTO types the low-confidence guess instead of failing', async () => {
+  const { bot, sentMessages } = createTestBot(STATES.WAITING_PLATE_PHOTO, {
+    detectedPlate: null,
+    plateGuess: 'AB123CD',
+    plateConfidence: 'baja'
+  });
+
+  await bot.handleBotResponse('Uy, no veo bien lo que dice la foto. 🤔\nMandame la *patente por escrito*.');
+
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0], 'AB123CD', 'a guess beats a failed report');
+  assert.equal(bot.state, STATES.WAITING_PLATE_CONFIRM);
+});
+
+test('WAITING_PLATE_CONFIRM trusts Boti when we only have a low-confidence guess', async () => {
+  const { bot, sentMessages } = createTestBot(STATES.WAITING_PLATE_CONFIRM, {
+    detectedPlate: null,
+    plateGuess: 'AB123CD',
+    plateConfidence: 'baja'
+  });
+
+  await bot.handleBotResponse('Anoté esta patente: AE817CU\n\n¿Está bien?\n\nA. Sí\nB. No');
+
+  assert.equal(sentMessages[0], 'A', 'low confidence → do not fight Boti');
+  assert.equal(bot.state, STATES.WAITING_DATE);
+});
+
+test('WAITING_PLATE_CONFIRM stops after repeated mismatches instead of looping', async () => {
+  const { bot, sentMessages } = createTestBot(STATES.WAITING_PLATE_CONFIRM, {
+    detectedPlate: 'A259VHF'
+  });
+  let failure = null;
+  bot.reportReject = (err) => { failure = err; };
+  const boti = 'Anoté esta patente: AE817CU\n\n¿Está bien?\n\nA. Sí\nB. No';
+
+  await bot.handleBotResponse(boti);           // rejection 1
+  bot.state = STATES.WAITING_PLATE_CONFIRM;
+  await bot.handleBotResponse(boti);           // rejection 2
+  bot.state = STATES.WAITING_PLATE_CONFIRM;
+  await bot.handleBotResponse(boti);           // third time: abort
+
+  assert.deepEqual(sentMessages, ['B', 'B']);
+  assert.ok(failure, 'report must fail');
+  assert.equal(failure.retryable, false);
+  assert.equal(bot.state, STATES.ERROR);
+});

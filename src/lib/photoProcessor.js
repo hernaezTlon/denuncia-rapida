@@ -325,6 +325,120 @@ function buildAddressFromNominatim(data = {}) {
   };
 }
 
+// ---------- USIG (official Buenos Aires City geocoder) ----------
+//
+// USIG returns the street names Boti itself uses ("SALGUERO, JERONIMO 88"), with a
+// door number almost every time inside CABA. Nominatim often gives a street without
+// a number, which makes Boti ask again. So: USIG first, Nominatim as fallback.
+
+const USIG_REVERSE_URL = 'https://ws.usig.buenosaires.gob.ar/geocoder/2.2/reversegeocoding';
+
+// "SALGUERO, JERONIMO" -> "JERONIMO SALGUERO"; "MITRE, BARTOLOME" -> "BARTOLOME MITRE"
+function usigStreetName(raw) {
+  const text = cleanText(String(raw || ''));
+  if (!text) return '';
+  const m = text.match(/^([^,]+),\s*(.+)$/);
+  let name = (m ? `${m[2]} ${m[1]}` : text).replace(/\s+/g, ' ').trim().toUpperCase();
+  // "JURAMENTO AV." -> "AV. JURAMENTO"
+  const av = name.match(/^(.+?)\s+(AV\.?)$/);
+  if (av) name = `AV. ${av[1]}`;
+  return name;
+}
+
+function buildAddressFromUsig(data = {}) {
+  if (!data || typeof data !== 'object') return null;
+  const puerta = cleanText(String(data.puerta || ''));
+  const esquina = cleanText(String(data.esquina || ''));
+
+  let formatted = '';
+  let street = '';
+  let number = '';
+  let needsNumber = false;
+
+  const doorMatch = puerta.match(/^(.+?)\s+(\d{1,5})$/);
+  if (doorMatch) {
+    street = usigStreetName(doorMatch[1]);
+    number = doorMatch[2];
+    formatted = `${street} ${number}`;
+  } else if (esquina) {
+    const parts = esquina.split(/\s+y\s+/i);
+    if (parts.length === 2) {
+      street = usigStreetName(parts[0]);
+      formatted = `${street} Y ${usigStreetName(parts[1])}`;
+    }
+  }
+
+  if (!formatted) return null;
+
+  return {
+    formatted,
+    street,
+    number,
+    neighborhood: '',
+    city: 'Buenos Aires',
+    raw: JSON.stringify(data),
+    needsNumber,
+    source: 'usig'
+  };
+}
+
+/**
+ * Reverse geocode with the official BA City service. Returns a geocode result
+ * (same shape as reverseGeocodeWithRetry). NOT_FOUND outside CABA.
+ */
+async function reverseGeocodeUsig(latitude, longitude, options = {}) {
+  const {
+    fetchImpl = safeFetch,
+    maxAttempts = 2,
+    timeoutMs = DEFAULT_GEOCODE_OPTIONS.timeoutMs,
+    retryDelayMs = DEFAULT_GEOCODE_OPTIONS.retryDelayMs
+  } = options;
+
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const url = `${USIG_REVERSE_URL}?x=${longitude}&y=${latitude}`;
+      const response = await fetchWithTimeout(fetchImpl, url, {}, timeoutMs);
+      if (!response.ok) {
+        const error = new Error(`USIG failed: ${response.status}`);
+        error.geocodeHttpStatus = response.status;
+        throw error;
+      }
+      const text = await response.text();
+      let data = null;
+      try { data = JSON.parse(text); } catch (_) { data = null; }
+      const address = buildAddressFromUsig(data);
+      if (!address) return createGeocodeResult(GEOCODE_STATUS.NOT_FOUND, { attempts: attempt });
+      return createGeocodeResult(GEOCODE_STATUS.RESOLVED, { attempts: attempt, address });
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts && isRetryableGeocodingError(error)) {
+        await delay(retryDelayMs * attempt);
+        continue;
+      }
+      if (isAbortError(error)) return createGeocodeResult(GEOCODE_STATUS.TIMEOUT, { attempts: attempt, error });
+      return createGeocodeResult(GEOCODE_STATUS.UNAVAILABLE, { attempts: attempt, error });
+    }
+  }
+  return createGeocodeResult(GEOCODE_STATUS.UNAVAILABLE, { attempts: maxAttempts, error: lastError });
+}
+
+/**
+ * Best address for a coordinate: USIG (official, numbered) first, Nominatim after.
+ * If USIG gives a corner and Nominatim gives a number, the number wins.
+ */
+async function resolveAddress(latitude, longitude, options = {}) {
+  const usig = await reverseGeocodeUsig(latitude, longitude, options);
+  if (usig.status === GEOCODE_STATUS.RESOLVED && usig.address?.number) return usig;
+
+  const nominatim = await reverseGeocodeWithRetry(latitude, longitude, options);
+  if (nominatim.status === GEOCODE_STATUS.RESOLVED && nominatim.address && !nominatim.address.needsNumber) {
+    return nominatim;
+  }
+  if (usig.status === GEOCODE_STATUS.RESOLVED) return usig;
+  return nominatim;
+}
+
 /**
  * Extract GPS coordinates, date, and other metadata from a photo
  */
@@ -356,7 +470,7 @@ async function extractPhotoData(filePath) {
       };
 
       // Reverse geocode to get street address (with retries + timeout)
-      result.geocode = await reverseGeocodeWithRetry(result.gps.latitude, result.gps.longitude);
+      result.geocode = await resolveAddress(result.gps.latitude, result.gps.longitude);
       result.address = result.geocode.address;
     }
   }
@@ -521,6 +635,8 @@ module.exports = {
   extractPhotoData,
   reverseGeocode,
   reverseGeocodeWithRetry,
+  reverseGeocodeUsig,
+  resolveAddress,
   formatDateForBot,
   formatTimeForBot,
   isRecent,
@@ -528,5 +644,7 @@ module.exports = {
   // Exported for tests
   parseExifDate,
   buildAddressFromNominatim,
+  buildAddressFromUsig,
+  usigStreetName,
   GEOCODE_STATUS
 };
