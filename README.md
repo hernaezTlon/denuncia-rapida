@@ -107,7 +107,7 @@ Con eso la app resuelve **dirección, fecha y hora reales de la foto** sola (usa
 
 WhatsApp borra la metadata de las fotos enviadas como imagen. La vía sin fricción es **no pasar por WhatsApp para la foto**: un atajo en la hoja de compartir guarda el original (con fecha, hora y GPS) en `iCloud Drive/Denuncias`, y la app en la Mac lo levanta sola. Te sigue respondiendo por el chat "Mensaje para mí" con el número de trámite.
 
-Creá el atajo una vez (app Atajos → + → detalles → "Mostrar en hoja de compartir", tipo: Imágenes):
+Atajo listo para instalar: abrí [`Denunciar.shortcut`](Denunciar.shortcut) en el iPhone y tocá **Añadir atajo** (está firmado con `shortcuts sign --mode anyone`). O crealo a mano (app Atajos → + → detalles → "Mostrar en hoja de compartir", tipo: Imágenes):
 
 1. **Recibir** `Imágenes` de la hoja de compartir
 2. **Convertir imagen** → formato `JPEG`, calidad máxima, **Conservar metadatos: SÍ**
