@@ -320,7 +320,7 @@ ipcMain.handle('whatsapp-status', () => {
 // AI: classify a photo into one of the violation categories
 ipcMain.handle('ai-classify-violation', async (event, photoPath) => {
   try {
-    const category = await aiAssistant.classifyViolation(photoPath);
+    const category = (await aiAssistant.classifyViolation(photoPath)) || aiAssistant.DEFAULT_VIOLATION;
     return { success: true, category };
   } catch (error) {
     console.error('AI classify error:', error);

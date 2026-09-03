@@ -38,6 +38,8 @@ function parseTimeText(text) {
   return { time: `${String(h).padStart(2, '0')}:${m[2]}` };
 }
 
+const { describeViolation, parseTypeAnswer, typeMenuText } = require('./violationText');
+
 function isLikelyAddress(text) {
   const t = String(text || '').trim();
   if (t.length < 4 || t.length > 90) return false;
@@ -107,6 +109,8 @@ class InboxWatcher {
       remindedAddress: false,
       needsTime: false,   // no EXIF date → ask the user for the hour
       askedTime: false,
+      needsType: false,   // AI couldn't classify → ask which violation
+      askedType: false,
       createdAt: now,
       expiresAt: now + PENDING_TTL_MS,
       attempts: 0,
@@ -260,6 +264,7 @@ class InboxWatcher {
         if (ocr.cropPath) p.platePhotoPath = ocr.cropPath;
       }
       if (!p.description && category) p.description = category;
+      if (!p.description) p.needsType = true;   // no Ollama here: ask the user which violation
       // EXIF GPS survives when sent "as document" — free address (USIG first, numbered)
       if (!p.address && photoData?.address?.formatted) {
         p.address = photoData.address.formatted;
@@ -350,6 +355,16 @@ class InboxWatcher {
       if (!silent) this._reply(parsedTime.recent ? 'Hora: *ahora*' : `Hora de la foto: *${t.time}*`);
       return;
     }
+    const waitingType = draft || this.drafts.find((d) => d.needsType);
+    if (waitingType && waitingType.needsType) {
+      const category = parseTypeAnswer(text);
+      if (category || !isLikelyAddress(text)) {
+        waitingType.description = category || text.trim();
+        waitingType.needsType = false;
+        if (!silent) this._reply(`Infracción: *${waitingType.description}*`);
+        return;
+      }
+    }
     const p = draft || (isLikelyAddress(text) ? this._draftNeedingAddress() : this.pending);
     if (!p) return;
     if (!p.address && isLikelyAddress(text)) {
@@ -392,7 +407,11 @@ class InboxWatcher {
         d.askedTime = true;
         await this._reply(`Sin fecha en la foto de ${this._label(d)}. ¿A qué *hora* la sacaste? (ej: 09:30) o escribí "ahora".`);
       }
-      if (!d.address || d.needsTime) continue;
+      if (d.needsType && !d.askedType) {
+        d.askedType = true;
+        await this._reply(`¿Qué *infracción* es la de ${this._label(d)}? Respondé la letra, o escribí qué pasa:\n${typeMenuText()}`);
+      }
+      if (!d.address || d.needsTime || d.needsType) continue;
       draft = d;
       break;
     }
@@ -430,7 +449,7 @@ class InboxWatcher {
       address: p.address,
       date: p.date || todayDDMMYYYY(),
       time: p.time || nowHHMM(),
-      description: p.description || 'Estacionado en lugar prohibido',
+      description: describeViolation(p.description || 'Estacionado en lugar prohibido', { plate: p.ocr?.plate || null }),
       contextPhotoPath: p.photoPath,
       platePhotoPath: p.platePhotoPath || p.photoPath,
       detectedPlate: p.ocr && p.ocr.confidence !== 'baja' ? p.ocr.plate : null,

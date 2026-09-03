@@ -74,17 +74,7 @@ async function detectAndCropPlate(photoPath) {
   };
 }
 
-const VIOLATION_OPTIONS = [
-  'Estacionado en entrada de garage',
-  'Estacionado en doble fila',
-  'Estacionado sobre la vereda',
-  'Estacionado en rampa de discapacitados',
-  'Estacionado en parada de colectivo',
-  'Estacionado en paso peatonal',
-  'Estacionado en ochava',
-  'Estacionado en lugar prohibido'
-];
-const DEFAULT_VIOLATION = 'Estacionado en lugar prohibido';
+const { VIOLATION_OPTIONS, DEFAULT_VIOLATION } = require('./violationText');
 
 async function ollamaGenerate({ prompt, images, format, model, options, timeoutMs = DEFAULT_TIMEOUT_MS, fetchImpl = fetch }) {
   const controller = new AbortController();
@@ -196,8 +186,10 @@ Respondé en JSON con esta forma exacta:
     const found = VIOLATION_OPTIONS.find((v) => v.toLowerCase() === normalized);
     return found || DEFAULT_VIOLATION;
   } catch (error) {
+    // null = "no classification" (Ollama down / absent), so callers can ask the user
+    // instead of silently filing the generic category.
     console.error('classifyViolation failed:', error.message);
-    return DEFAULT_VIOLATION;
+    return null;
   }
 }
 

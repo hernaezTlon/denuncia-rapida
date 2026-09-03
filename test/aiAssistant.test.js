@@ -67,14 +67,14 @@ test('classifyViolation falls back to default when model returns unknown categor
   fs.unlinkSync(photoPath);
 });
 
-test('classifyViolation falls back to default on Ollama HTTP error', async () => {
+test('classifyViolation returns null on Ollama HTTP error (caller asks the user)', async () => {
   const photoPath = makeTempJpeg();
   const fetchImpl = mockFetch([
     { ok: false, status: 500, body: {} }
   ]);
 
   const result = await classifyViolation(photoPath, { fetchImpl });
-  assert.equal(result, DEFAULT_VIOLATION);
+  assert.equal(result, null, 'AI unavailable → null, so the inbox can ask the user')
   fs.unlinkSync(photoPath);
 });
 

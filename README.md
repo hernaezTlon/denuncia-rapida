@@ -84,7 +84,7 @@ Con la app corriendo en tu Mac, usá el chat **"Mensaje para mí"** de WhatsApp 
 3. La app lee la patente (IA local + respaldo online), clasifica la infracción, entra a miBA sola y habla con Boti.
 4. **Te responde en el mismo chat con el número de trámite.** ✅
 
-Si falta la dirección, te la pide por el chat — un solo mensaje y sigue sola. Si la foto llegó sin fecha (WhatsApp la borra en las imágenes), te pregunta la hora: respondé `09:30` o `ahora`. Guarda la denuncia a medias hasta 24 horas y te recuerda una vez a los 30 minutos.
+Si falta la dirección, te la pide por el chat — un solo mensaje y sigue sola. Si la foto llegó sin fecha (WhatsApp la borra en las imágenes), te pregunta la hora: respondé `09:30` o `ahora`. Si no hay IA local para clasificar la infracción, te pregunta cuál es: respondé la letra (A senda peatonal, B rampa, C doble fila, D garage, E vereda, F parada de colectivo, G ochava) o escribí qué pasa. La descripción que va a Boti es una oración concreta con la patente y la falta — un texto genérico hizo que desestimaran una denuncia ("las fotos no muestran la falta"). Guarda la denuncia a medias hasta 24 horas y te recuerda una vez a los 30 minutos.
 También hay un daemon sin UI: `node scripts/inbox-daemon.js`.
 
 ### Qué hace sola cuando algo falla
@@ -157,7 +157,7 @@ Si te sirve, podés bancarlo en **[GitHub Sponsors](https://github.com/sponsors/
 
 ```bash
 npm run dev          # modo desarrollo (DevTools con Cmd+Opt+I, o OPEN_DEVTOOLS=1 npm run dev)
-npm test             # 91 tests (node --test)
+npm test             # 96 tests (node --test)
 npm run install-app  # wrapper .app de macOS vía osacompile
 ```
 
@@ -178,6 +178,7 @@ src/
     ├── whatsappBot.js      # máquina de estados de la conversación con Boti
     ├── inboxWatcher.js     # chat "Mensaje para mí": cola de denuncias, reintentos
     ├── folderWatcher.js    # iCloud Drive/Denuncias → misma cola, con EXIF intacto
+    ├── violationText.js    # menú de infracciones + oración descriptiva para Boti
     ├── aiAssistant.js      # Ollama: clasificación, OCR de patente, desambiguación
     ├── mibaAutoLogin.js    # ventana de login miBA + auto-fill
     ├── mibaCredentials.js  # almacenamiento encriptado (safeStorage)

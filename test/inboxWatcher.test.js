@@ -254,7 +254,8 @@ test('photo without EXIF date: asks for the time once, then uses the answer', as
   assert.equal(submitted[0].time, '09:30');
   assert.equal(submitted[0].date, todayDDMMYYYY());
   assert.equal(submitted[0].isRecent, false);
-  assert.equal(submitted[0].description, 'Estacionado en lugar prohibido', '"9:30" must not become the description');
+  assert.match(submitted[0].description, /prohibido/, 'default category kept');
+  assert.doesNotMatch(submitted[0].description, /9:30/, '"9:30" must not become the description');
 });
 
 test('photo without EXIF date: "ahora" means just now', async () => {
@@ -273,4 +274,29 @@ test('startFromFile runs the same photo pipeline as a WhatsApp document', async 
   watcher._onPhotoFile = async (photoPath, imageMsg, isDocument) => { seen.push({ photoPath, isDocument, caption: imageMsg.caption }); };
   await watcher.startFromFile('/tmp/from-icloud.jpg');
   assert.deepEqual(seen, [{ photoPath: '/tmp/from-icloud.jpg', isDocument: true, caption: undefined }]);
+});
+
+test('no AI classification: asks the violation type once; a letter answers it and the description is specific', async () => {
+  const { watcher, submitted, replies } = makeFlakyWatcher(0);
+  watcher.drafts = [draft({ needsType: true, ocr: { plate: 'KTO299', confidence: 'alta' } })];
+  watcher.pending = watcher.drafts[0];
+  await watcher._maybeFire();
+  assert.equal(submitted.length, 0, 'waits for the type');
+  assert.equal(replies.filter((r) => /infracci/i.test(r)).length, 1);
+  await watcher._maybeFire();
+  assert.equal(replies.filter((r) => /infracci/i.test(r)).length, 1, 'asked only once');
+  await watcher._onText('a');
+  assert.equal(submitted.length, 1);
+  assert.match(submitted[0].description, /senda peatonal/);
+  assert.match(submitted[0].description, /KTO299/);
+});
+
+test('no AI classification: free text answers the type question too', async () => {
+  const { watcher, submitted } = makeFlakyWatcher(0);
+  watcher.drafts = [draft({ needsType: true })];
+  watcher.pending = watcher.drafts[0];
+  await watcher._maybeFire();
+  await watcher._onText('Tapa la salida del garage del hospital');
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].description, 'Tapa la salida del garage del hospital');
 });
