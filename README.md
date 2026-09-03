@@ -107,11 +107,11 @@ Con eso la app resuelve **dirección, fecha y hora reales de la foto** sola (usa
 
 WhatsApp borra la metadata de las fotos enviadas como imagen. La vía sin fricción es **no pasar por WhatsApp para la foto**: un atajo en la hoja de compartir guarda el original (con fecha, hora y GPS) en `iCloud Drive/Denuncias`, y la app en la Mac lo levanta sola. Te sigue respondiendo por el chat "Mensaje para mí" con el número de trámite.
 
-Atajo listo para instalar: abrí [`Denunciar.shortcut`](Denunciar.shortcut) en el iPhone y tocá **Añadir atajo** (está firmado con `shortcuts sign --mode anyone`). O crealo a mano (app Atajos → + → detalles → "Mostrar en hoja de compartir", tipo: Imágenes):
+Atajo listo para instalar: abrí [`Denunciar.shortcut`](Denunciar.shortcut) en el iPhone y tocá **Añadir atajo** (está firmado con `shortcuts sign --mode anyone`). **Después de añadirlo, abrilo una vez y en la acción "Guardar archivo" elegí la carpeta `iCloud Drive/Denuncias`** (un archivo `.shortcut` no puede traer esa carpeta elegida; si la dejás en "Shortcuts" la foto va a `iCloud Drive/Shortcuts` y nadie la ve). O crealo a mano (app Atajos → + → detalles → "Mostrar en hoja de compartir", tipo: Imágenes):
 
 1. **Recibir** `Imágenes` de la hoja de compartir
 2. **Convertir imagen** → formato `JPEG`, calidad máxima, **Conservar metadatos: SÍ**
-3. **Guardar archivo** → servicio `iCloud Drive`, carpeta `Denuncias`, **Preguntar dónde guardar: NO**
+3. **Guardar archivo** → destino: carpeta `iCloud Drive/Denuncias` (elegila en el selector), **Subruta vacía**, **Preguntar dónde guardar: NO**
 4. (opcional) **Mostrar notificación** "Denuncia enviada 📷"
 
 Nombralo **Denunciar**. Uso: Fotos → Compartir → **Denunciar**. Listo.
@@ -157,7 +157,7 @@ Si te sirve, podés bancarlo en **[GitHub Sponsors](https://github.com/sponsors/
 
 ```bash
 npm run dev          # modo desarrollo (DevTools con Cmd+Opt+I, o OPEN_DEVTOOLS=1 npm run dev)
-npm test             # 90 tests (node --test)
+npm test             # 91 tests (node --test)
 npm run install-app  # wrapper .app de macOS vía osacompile
 ```
 
