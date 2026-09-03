@@ -423,3 +423,12 @@ test('BAX ad in WAITING_SUBCATEGORY / WAITING_CONFIRM_START is NOT a login link 
     assert.deepEqual(loginEvents, [], `from ${start}`);
   }
 });
+
+test('WAITING_CATEGORY picks "Reportar vehículo" when Boti shows the 5-option menu (premature A ignored)', async () => {
+  // 2026-09-03: our prose-fallback "A" went out before the menu; Boti ignored it and showed
+  // "Elegí la primera opción y empezamos: A. Reportar vehículo…" while we sat in waiting_category.
+  const { bot, sentMessages: sent } = createTestBot(STATES.WAITING_CATEGORY);
+  await bot.handleBotResponse('Elegí la primera opción y empezamos:\n\nA. Reportar vehículo\nB. Auto abandonado\nC. Dónde estacionar\nD. Qué es miBA\nE. Más solicitudes');
+  assert.deepEqual(sent, ['A']);
+  assert.equal(bot.state, STATES.WAITING_CONFIRM_START);
+});

@@ -736,13 +736,24 @@ class WhatsAppBot extends EventEmitter {
       case STATES.WAITING_CATEGORY: {
         // Prefer menu parsing — look for "auto mal estacionado" in option list
         if (hasMenu) {
-          const key = findMenuOption(menu, VIOLATION_GOAL_KEYWORDS);
+          let key = findMenuOption(menu, VIOLATION_GOAL_KEYWORDS);
           if (key) {
             await this.delay(500);
             await this.sendMessage(key);
             this.log(`Menu → ${key}: ${menu[key]} (violation type)`);
             this.state = STATES.WAITING_SUBCATEGORY;
             this.emitProgress(20, `Seleccionando "${menu[key]}"...`);
+            break;
+          }
+          // Boti's "Elegí la primera opción y empezamos: A. Reportar vehículo…" menu can
+          // land here when our earlier "A" went out before the menu and Boti ignored it.
+          key = findMenuOption(menu, [['reportar vehiculo'], ['reportar auto'], ...CONFIRM_START_KEYWORDS]);
+          if (key) {
+            await this.delay(500);
+            await this.sendMessage(key);
+            this.log(`Menu → ${key}: ${menu[key]} (start report)`);
+            this.state = STATES.WAITING_CONFIRM_START;
+            this.emitProgress(25, `Seleccionando "${menu[key]}"...`);
             break;
           }
         }
