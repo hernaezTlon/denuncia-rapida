@@ -90,7 +90,7 @@ También hay un daemon sin UI: `node scripts/inbox-daemon.js`.
 ### Qué hace sola cuando algo falla
 
 - **Boti se cuelga o corta**: reintenta la conversación hasta 3 veces (30 s y 90 s de espera). Solo te avisa si falla las tres.
-- **No lee bien la patente**: si Boti pide la patente por texto, manda igual la mejor lectura que tenga. Boti la confirma con su propio OCR.
+- **Lee la patente sola, sin Ollama**: detector YOLOS + lector ONNX (`fast-plate-ocr`, ~50 ms, autos y motos de dos líneas). Si la lectura es dudosa y hay Ollama, lo consulta; si Boti pide la patente por texto, manda igual la mejor lectura que tenga.
 - **Boti lee otra patente** (un auto de fondo): le dice que no hasta 2 veces. Después te pide una foto de cerca de la patente y con esa reintenta sola.
 - **Dos fotos, dos autos**: si la segunda foto tiene otra patente, arma una segunda denuncia y la manda cuando termina la primera. Si es la misma patente (o no se lee), la usa como close-up.
 - **Ollama apagado o sin modelo**: lo arranca y descarga el modelo sola. Lo revisa cada 10 minutos.
@@ -157,7 +157,7 @@ Si te sirve, podés bancarlo en **[GitHub Sponsors](https://github.com/sponsors/
 
 ```bash
 npm run dev          # modo desarrollo (DevTools con Cmd+Opt+I, o OPEN_DEVTOOLS=1 npm run dev)
-npm test             # 96 tests (node --test)
+npm test             # 98 tests (node --test)
 npm run install-app  # wrapper .app de macOS vía osacompile
 ```
 
@@ -180,6 +180,7 @@ src/
     ├── folderWatcher.js    # iCloud Drive/Denuncias → misma cola, con EXIF intacto
     ├── violationText.js    # menú de infracciones + oración descriptiva para Boti
     ├── aiAssistant.js      # Ollama: clasificación, OCR de patente, desambiguación
+    ├── plateOcrOnnx.js     # lector de patentes local (fast-plate-ocr ONNX, sin Ollama)
     ├── mibaAutoLogin.js    # ventana de login miBA + auto-fill
     ├── mibaCredentials.js  # almacenamiento encriptado (safeStorage)
     ├── reportValidation.js # validación soft (repara en vez de bloquear)

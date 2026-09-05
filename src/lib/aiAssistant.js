@@ -75,6 +75,8 @@ async function detectAndCropPlate(photoPath) {
 }
 
 const { VIOLATION_OPTIONS, DEFAULT_VIOLATION } = require('./violationText');
+const { readPlateCrop } = require('./plateOcrOnnx');
+const ONNX_CONFIDENT = 0.9;   // min per-character softmax to trust the ONNX read without Ollama
 
 async function ollamaGenerate({ prompt, images, format, model, options, timeoutMs = DEFAULT_TIMEOUT_MS, fetchImpl = fetch }) {
   const controller = new AbortController();
@@ -352,9 +354,49 @@ async function ocrPlateLocal(photoPath, { fetchImpl = fetch, timeoutMs = 60_000 
       imageBase64 = loadImageBase64(photoPath);
     }
 
+    // Stage 2a — fast local reader (fast-plate-ocr ONNX, no Ollama). A confident read
+    // that matches an Argentine format is final; otherwise it stays as a low-confidence
+    // guess and we let Ollama (if present) have a go.
+    let onnxGuess = null;
+    if (detectionScore) {
+      try {
+        const r = await readPlateCrop(Buffer.from(imageBase64, 'base64'));
+        const detected = detectPlateFormat(r.plate);
+        console.log(`ONNX plate read: ${r.plate} (min conf ${(r.minConfidence * 100).toFixed(0)}%)${detected ? '' : ' — no AR format'}`);
+        if (detected) {
+          onnxGuess = { plate: detected.plate, format: detected.format, minConfidence: r.minConfidence };
+          if (r.minConfidence >= ONNX_CONFIDENT) {
+            return {
+              plate: detected.plate,
+              format: detected.format,
+              confidence: 'alta',
+              vehicle: detected.format.includes('moto') ? 'moto' : 'auto',
+              detectionScore,
+              cropPath,
+              source: 'local-onnx',
+              reason: ''
+            };
+          }
+        }
+      } catch (err) {
+        console.warn('ONNX plate reader failed:', err.message);
+      }
+    }
+
     // Even if the local reader (Ollama) is missing or fails, the YOLOS crop is
-    // valuable on its own: it's what we send Boti as the plate photo.
+    // valuable on its own: it's what we send Boti as the plate photo. A low-confidence
+    // ONNX read rides along as a guess (Boti re-checks it with its own OCR).
     const cropOnly = () => (cropPath ? {
+      ...(onnxGuess ? {
+        plate: onnxGuess.plate,
+        format: onnxGuess.format,
+        confidence: 'baja',
+        vehicle: onnxGuess.format.includes('moto') ? 'moto' : 'auto',
+        detectionScore,
+        cropPath,
+        source: 'local-onnx',
+        reason: `lectura dudosa (${(onnxGuess.minConfidence * 100).toFixed(0)}%)`
+      } : {
       plate: null,
       format: null,
       confidence: 'baja',
@@ -363,7 +405,7 @@ async function ocrPlateLocal(photoPath, { fetchImpl = fetch, timeoutMs = 60_000 
       cropPath,
       source: 'local',
       reason: 'detector ok, lector no disponible'
-    } : null);
+    }) } : null);
 
     const prompt = `TAREA: Leer una matrícula (patente) argentina.
 
