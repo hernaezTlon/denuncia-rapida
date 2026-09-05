@@ -13,6 +13,6 @@ rsync -az --delete \
 
 echo "→ npm install + restart launchd agent"
 ssh "$USER_AT" 'export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh";
-  cd ~/denuncia-rapida && npm install --no-audit --no-fund 2>&1 | tail -2;
+  cd ~/denuncia-rapida && { npm install --no-audit --no-fund 2>&1 | tail -4; test "${PIPESTATUS[0]}" -eq 0 || { echo "NPM INSTALL FAILED"; exit 1; }; };
   launchctl kickstart -k "gui/$(id -u)/com.denunciarapida.app" && echo "restarted";
   sleep 20; tail -8 ~/Library/Logs/denuncia-rapida.log'
