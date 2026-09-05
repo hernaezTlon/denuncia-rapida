@@ -45,3 +45,15 @@ test('ignores non-images, dotfiles and iCloud placeholders; waits while WhatsApp
   assert.deepEqual(calls, [path.join(dir, 'procesadas', 'IMG_0003.JPG')]);
   assert.ok(fs.existsSync(path.join(dir, 'notes.txt')), 'non-image untouched');
 });
+
+test('a sidecar <name>.json next to the photo is passed to startFromFile and moved along', async () => {
+  const { dir, w } = setup();
+  const calls = [];
+  w.inbox.startFromFile = async (p, prefill) => { calls.push({ p, prefill }); };
+  fs.writeFileSync(path.join(dir, 'IMG_9.jpg'), 'photo');
+  fs.writeFileSync(path.join(dir, 'IMG_9.json'), JSON.stringify({ address: 'Cabildo 2300', time: '09:30' }));
+  await w.tick(); await w.tick();
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].prefill, { address: 'Cabildo 2300', time: '09:30' });
+  assert.ok(fs.existsSync(path.join(dir, 'procesadas', 'IMG_9.json')));
+});

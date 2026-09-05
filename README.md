@@ -94,6 +94,7 @@ También hay un daemon sin UI: `node scripts/inbox-daemon.js`.
 - **Boti lee otra patente** (un auto de fondo): le dice que no hasta 2 veces. Después te pide una foto de cerca de la patente y con esa reintenta sola.
 - **Dos fotos, dos autos**: si la segunda foto tiene otra patente, arma una segunda denuncia y la manda cuando termina la primera. Si es la misma patente (o no se lee), la usa como close-up.
 - **Ollama apagado o sin modelo**: lo arranca y descarga el modelo sola. Lo revisa cada 10 minutos.
+- **Se rompió algo que no sabe arreglar** (falló 3 veces, datos inválidos): llama a **Claude Code** en la misma Mac (`src/lib/sos.js`). Claude lee el log y las fotos, arregla el código, corre los tests, reinicia la app y vuelve a poner la foto en marcha con los datos que ya se sabían. Te avisa por el chat al llamarlo y al terminar. Una intervención a la vez; sin tope. El guion que recibe está en `scripts/sos-brief.md`. Requiere `claude` instalado y logueado en esa Mac (`npm i -g @anthropic-ai/claude-code`). Simulacro: `DENUNCIA_DRY_RUN=1` hace fallar la denuncia antes de hablar con Boti y dispara el SOS.
 
 ### La receta de cero interacciones extra
 

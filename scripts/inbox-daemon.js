@@ -20,6 +20,7 @@ const reportHistory = require('../src/lib/reportHistory');
 const transcribe = require('../src/lib/transcribe');
 const { superviseOllama } = require('../src/lib/ollamaSupervisor');
 const { FolderWatcher } = require('../src/lib/folderWatcher');
+const { Sos } = require('../src/lib/sos');
 
 function arg(flag) {
   const i = process.argv.indexOf(flag);
@@ -31,7 +32,7 @@ function arg(flag) {
   const bot = new WhatsAppBot();
   const watcher = new InboxWatcher(
     bot,
-    { aiAssistant, photoProcessor, reportValidation, reportHistory, transcribe },
+    { aiAssistant, photoProcessor, reportValidation, reportHistory, transcribe, sos: new Sos({ log: (t) => console.log('🛠️', t) }) },
     () => {}
   );
   new FolderWatcher(watcher, { log: (t) => console.log('📁', t) }).start();

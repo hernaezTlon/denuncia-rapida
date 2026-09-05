@@ -57,8 +57,15 @@ class FolderWatcher {
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.renameSync(full, dest);
       this.sizes.delete(name);
-      this.log(`carpeta: nueva foto ${name}`);
-      await this.inbox.startFromFile(dest);
+      // Optional sidecar "<name>.json" (SOS re-feed): { address, date, time, description }
+      let prefill = null;
+      const sidecar = path.join(this.dir, name.replace(/\.[^.]+$/, '') + '.json');
+      if (fs.existsSync(sidecar)) {
+        try { prefill = JSON.parse(fs.readFileSync(sidecar, 'utf8')); } catch (e) { this.log(`carpeta: sidecar ilegible (${e.message})`); }
+        try { fs.renameSync(sidecar, path.join(this.dir, PROCESSED_SUBDIR, path.basename(sidecar))); } catch { /* leave it */ }
+      }
+      this.log(`carpeta: nueva foto ${name}${prefill ? ' (+datos)' : ''}`);
+      await this.inbox.startFromFile(dest, prefill);
     }
   }
 

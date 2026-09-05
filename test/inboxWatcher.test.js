@@ -300,3 +300,35 @@ test('no AI classification: free text answers the type question too', async () =
   assert.equal(submitted.length, 1);
   assert.equal(submitted[0].description, 'Tapa la salida del garage del hospital');
 });
+
+test('a report that fails for good calls the SOS with the draft, the photos and the reason', async () => {
+  const { watcher, replies } = makeFlakyWatcher(5);   // fails every time
+  const calls = [];
+  watcher.deps.sos = { requestIntervention: async (ctx) => { calls.push(ctx); return 'id1'; }, collectResults: () => [] };
+  watcher.retryDelaysMs = [1, 1];
+  watcher.pending = draft({ ocr: { plate: 'KTO299', confidence: 'alta', cropPath: '/tmp/crop.jpg' }, description: 'Estacionado en ochava' });
+  await watcher._maybeFire();
+  assert.equal(calls.length, 1, 'one SOS after the last attempt');
+  assert.match(calls[0].reason, /Boti timeout/);
+  assert.equal(calls[0].photoPath, '/tmp/x.jpg');
+  assert.equal(calls[0].cropPath, '/tmp/crop.jpg');
+  assert.equal(calls[0].draft.address, 'Cabildo 2300');
+  assert.equal(calls[0].draft.description, 'Estacionado en ochava');
+  assert.ok(replies.some((r) => /Claude/.test(r)), 'tells the user Claude was called');
+});
+
+test('startFromFile with a sidecar prefill passes address/time/description on (SOS re-feed)', async () => {
+  const { watcher } = makeFlakyWatcher(0);
+  const seen = [];
+  watcher._onPhotoFile = async (photoPath, imageMsg, isDocument, prefill) => { seen.push(prefill); };
+  await watcher.startFromFile('/tmp/x.jpg', { address: 'Cabildo 2300', time: '09:30', description: 'Estacionado en ochava' });
+  assert.deepEqual(seen, [{ address: 'Cabildo 2300', time: '09:30', description: 'Estacionado en ochava' }]);
+});
+
+test('_maybeFire posts pending SOS results to the chat', async () => {
+  const { watcher, replies } = makeFlakyWatcher(0);
+  let once = [{ id: 'a', text: 'Arreglé el lector.' }];
+  watcher.deps.sos = { requestIntervention: async () => null, collectResults: () => { const r = once; once = []; return r; } };
+  await watcher._maybeFire();
+  assert.ok(replies.some((r) => /Arreglé el lector/.test(r)));
+});

@@ -15,6 +15,7 @@ const photoProcessor = require('../lib/photoProcessor');
 const transcribe = require('../lib/transcribe');
 const ollamaSupervisor = require('../lib/ollamaSupervisor');
 const { FolderWatcher } = require('../lib/folderWatcher');
+const { Sos } = require('../lib/sos');
 
 const mibaLogin = new MiBAAutoLogin();
 let inboxWatcher = null;
@@ -154,7 +155,11 @@ ipcMain.handle('whatsapp-init', async () => {
         if (!inboxWatcher) {
           inboxWatcher = new InboxWatcher(
             whatsappBot,
-            { aiAssistant, photoProcessor, reportValidation: { validateReportData }, reportHistory, transcribe },
+            {
+              aiAssistant, photoProcessor, reportValidation: { validateReportData }, reportHistory, transcribe,
+              // SOS: a report that dies for good calls Claude Code on this machine to fix the cause
+              sos: new Sos({ log: (t) => console.log('[sos]', t) })
+            },
             (text) => {
               try { mainWindow.webContents.send('whatsapp-message', { from: 'system', text: `📲 ${text}` }); } catch (_) { /* window gone */ }
             }

@@ -199,11 +199,12 @@ class InboxWatcher {
   }
 
   // A photo dropped in the watched folder (iCloud Drive/Denuncias): original file, EXIF intact.
-  async startFromFile(photoPath) {
-    return this._onPhotoFile(photoPath, {}, true);
+  // `prefill` comes from a sidecar JSON (SOS re-feed): { address, date, time, description }.
+  async startFromFile(photoPath, prefill = null) {
+    return this._onPhotoFile(photoPath, {}, true, prefill);
   }
 
-  async _onPhotoFile(photoPath, imageMsg, isDocument) {
+  async _onPhotoFile(photoPath, imageMsg, isDocument, prefill = null) {
     const { aiAssistant } = this.deps;
     // Is this a close-up of the vehicle we already have, or another vehicle?
     const current = this.pending;
@@ -227,10 +228,10 @@ class InboxWatcher {
         return this._maybeFire();
       }
       this._log('inbox: foto de otro vehículo → nueva denuncia en cola');
-      return this._startDraft(photoPath, imageMsg, isDocument, ocr);
+      return this._startDraft(photoPath, imageMsg, isDocument, ocr, prefill);
     }
 
-    return this._startDraft(photoPath, imageMsg, isDocument, null);
+    return this._startDraft(photoPath, imageMsg, isDocument, null, prefill);
   }
 
   // Same vehicle unless both photos read a plate and the plates differ.
@@ -241,9 +242,16 @@ class InboxWatcher {
     return a === b;
   }
 
-  async _startDraft(photoPath, imageMsg, isDocument, precomputedOcr) {
+  async _startDraft(photoPath, imageMsg, isDocument, precomputedOcr, prefill = null) {
     const { aiAssistant, photoProcessor } = this.deps;
     const draft = this._newDraft(photoPath);
+    if (prefill) {
+      // Sidecar data (SOS re-feed): what the user already answered last time
+      if (prefill.address) draft.address = String(prefill.address);
+      if (prefill.description) draft.description = String(prefill.description);
+      if (prefill.time) { draft.time = String(prefill.time); draft.date = prefill.date ? String(prefill.date) : todayDDMMYYYY(); }
+      else if (prefill.date) draft.date = String(prefill.date);
+    }
     this.drafts.push(draft);
     await this._reply(`Foto recibida ✓ ${isDocument ? '(con metadata)' : ''} — leyendo patente y datos…`);
 
@@ -381,6 +389,11 @@ class InboxWatcher {
   async _maybeFire() {
     if (this.firing) return;
 
+    // Claude (SOS) finished an intervention: show its summary
+    for (const r of (this.deps.sos?.collectResults?.() || [])) {
+      await this._reply(`🛠️ Claude: ${r.text}`);
+    }
+
     // Expire stale drafts, remind about missing addresses
     const now = Date.now();
     for (const d of [...this.drafts]) {
@@ -463,6 +476,7 @@ class InboxWatcher {
       this.firing = false;
       this._dropDraft(p);
       await this._reply(`✗ Datos inválidos: ${JSON.stringify(v.errors)}`);
+      await this._sos(p, new Error(`Datos inválidos: ${JSON.stringify(v.errors)}`));
       return;
     }
 
@@ -472,6 +486,11 @@ class InboxWatcher {
     const startedAt = new Date().toISOString();
     let retryWait = 0;
     try {
+      if (process.env.DENUNCIA_DRY_RUN) {
+        // Drill: exercise everything up to Boti, then fail for good (tests the SOS path)
+        p.attempts = MAX_ATTEMPTS;
+        throw new Error('dry-run: simulacro, no se envía a Boti');
+      }
       const result = await this.bot.submitReport(report);
       await this._reply(`✅ *Denuncia enviada.*\nN° de trámite: *${result.ticketNumber}*`);
       reportHistory.saveReport({ startedAt, input: report, sanitized: report, success: true, ticketNumber: result.ticketNumber, duration: result.duration, attempts: p.attempts, source: 'whatsapp-inbox' });
@@ -487,13 +506,41 @@ class InboxWatcher {
         await this._reply(`✗ Falló: ${e.message}\nReintento en ${Math.round(retryWait / 1000)}s…`);
       } else {
         this._dropDraft(p);
-        await this._reply(`✗ Falló ${MAX_ATTEMPTS} veces: ${e.message}\nMandá la foto de nuevo para reintentar.`);
+        await this._reply(`✗ Falló ${MAX_ATTEMPTS} veces: ${e.message}`);
+        await this._sos(p, e);
       }
     }
     this.firing = false;
     if (retryWait) await this._sleep(retryWait);
     // Retry, or the next draft in the queue
     if (this.drafts.length) await this._maybeFire();
+  }
+
+  // The report is dead: hand it to Claude (SOS) with everything we know, so it can fix the
+  // cause and re-feed the photo. Silent no-op when no SOS is configured.
+  async _sos(draft, error) {
+    const sos = this.deps.sos;
+    if (!sos?.requestIntervention) return;
+    let logTail = '';
+    try {
+      const logPath = path.join(os.homedir(), 'Library', 'Logs', 'denuncia-rapida.log');
+      logTail = fs.readFileSync(logPath, 'utf8').split('\n').slice(-200).join('\n');
+    } catch { /* no log file (dev) */ }
+    let state = null;
+    try { state = this.bot.getState(); } catch { /* mock bot */ }
+    const id = await sos.requestIntervention({
+      reason: error.message,
+      state,
+      photoPath: draft.photoPath,
+      cropPath: draft.ocr?.cropPath || draft.platePhotoPath || null,
+      draft: {
+        address: draft.address, date: draft.date, time: draft.time, description: draft.description,
+        plate: draft.ocr?.plate || null, plateConfidence: draft.ocr?.confidence || null, attempts: draft.attempts
+      },
+      logTail
+    }).catch((e) => { this._log(`SOS error: ${e.message}`); return null; });
+    if (id) await this._reply('🛠️ Llamé a Claude para que revise qué pasó y lo arregle. Te aviso acá cuando termine.');
+    else await this._reply('Claude ya está trabajando en un problema anterior; este queda para después. Mandá la foto de nuevo más tarde.');
   }
 
   // ---------- plumbing ----------
